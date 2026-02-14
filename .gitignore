@@ -1,0 +1,9 @@
+# Godot 4 ignores
+.godot/
+*.tmp
+*.log
+export_presets.cfg
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,76 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/world_map_ui.gd" id="1"]
+
+[node name="WorldMap" type="Control"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1")
+
+[node name="MapBackground" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.04, 0.05, 0.07, 1)
+
+[node name="RegionContainer" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="NodeIconContainer" type="Control" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="TooltipLabel" type="Label" parent="."]
+layout_mode = 1
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 12.0
+offset_top = -50.0
+offset_right = 400.0
+offset_bottom = -8.0
+text = ""
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.5, 0.55, 0.6, 1)
+
+[node name="RegionInfoPanel" type="PanelContainer" parent="."]
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -220.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = 220.0
+visible = false
+
+[node name="InfoVBox" type="VBoxContainer" parent="RegionInfoPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="InfoName" type="Label" parent="RegionInfoPanel/InfoVBox"]
+layout_mode = 2
+text = "Region Name"
+theme_override_font_sizes/font_size = 16
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+[node name="InfoStats" type="Label" parent="RegionInfoPanel/InfoVBox"]
+layout_mode = 2
+text = "Stats"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.55, 0.6, 0.65, 1)
+
+[node name="DeployButton" type="Button" parent="RegionInfoPanel/InfoVBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 36)
+text = "[ DEPLOY HERE ]"

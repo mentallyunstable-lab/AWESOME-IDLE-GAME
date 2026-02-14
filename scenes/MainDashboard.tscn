@@ -1,0 +1,249 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Theme" path="res://themes/dark_theme.tres" id="1"]
+[ext_resource type="Script" path="res://scripts/main_dashboard.gd" id="2"]
+[ext_resource type="PackedScene" path="res://scenes/UpgradePanel.tscn" id="3"]
+[ext_resource type="PackedScene" path="res://scenes/WorldMap.tscn" id="4"]
+
+[node name="MainDashboard" type="MarginContainer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("1")
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+script = ExtResource("2")
+
+[node name="VBoxLayout" type="VBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+; ===== TOP BAR =====
+[node name="TopBar" type="PanelContainer" parent="VBoxLayout"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 56)
+
+[node name="HBox" type="HBoxContainer" parent="VBoxLayout/TopBar"]
+layout_mode = 2
+theme_override_constants/separation = 32
+
+[node name="BandwidthBlock" type="VBoxContainer" parent="VBoxLayout/TopBar/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="BandwidthTitle" type="Label" parent="VBoxLayout/TopBar/HBox/BandwidthBlock"]
+layout_mode = 2
+text = "BANDWIDTH"
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="BandwidthValue" type="Label" parent="VBoxLayout/TopBar/HBox/BandwidthBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "0.0"
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+[node name="InfluenceBlock" type="VBoxContainer" parent="VBoxLayout/TopBar/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="InfluenceTitle" type="Label" parent="VBoxLayout/TopBar/HBox/InfluenceBlock"]
+layout_mode = 2
+text = "INFLUENCE"
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="InfluenceValue" type="Label" parent="VBoxLayout/TopBar/HBox/InfluenceBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "0.0"
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+[node name="InfluenceRate" type="Label" parent="VBoxLayout/TopBar/HBox/InfluenceBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "(+0.0/s)"
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="DetectionBlock" type="VBoxContainer" parent="VBoxLayout/TopBar/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="DetectionTitle" type="Label" parent="VBoxLayout/TopBar/HBox/DetectionBlock"]
+layout_mode = 2
+text = "DETECTION RISK"
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="DetectionValue" type="Label" parent="VBoxLayout/TopBar/HBox/DetectionBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "0.0%"
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+[node name="EncryptionBlock" type="VBoxContainer" parent="VBoxLayout/TopBar/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="EncryptionTitle" type="Label" parent="VBoxLayout/TopBar/HBox/EncryptionBlock"]
+layout_mode = 2
+text = "ENCRYPTION"
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="EncryptionValue" type="Label" parent="VBoxLayout/TopBar/HBox/EncryptionBlock"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Lv. 1"
+theme_override_font_sizes/font_size = 22
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+; ===== VIEW TOGGLE BAR =====
+[node name="ViewToggleBar" type="HBoxContainer" parent="VBoxLayout"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="DashboardViewBtn" type="Button" parent="VBoxLayout/ViewToggleBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Dashboard"
+
+[node name="MapViewBtn" type="Button" parent="VBoxLayout/ViewToggleBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Map"
+
+; ===== MAIN CONTENT (Center + Right) =====
+[node name="ContentHBox" type="HBoxContainer" parent="VBoxLayout"]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 12
+
+; ===== CENTER PANEL =====
+[node name="CenterPanel" type="PanelContainer" parent="VBoxLayout/ContentHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 2.0
+
+; --- Dashboard View (default) ---
+[node name="DashboardView" type="VBoxContainer" parent="VBoxLayout/ContentHBox/CenterPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 24
+
+[node name="NodeTitle" type="Label" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+layout_mode = 2
+horizontal_alignment = 1
+text = "ACTIVE NODES"
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="NodeCount" type="Label" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = "0"
+theme_override_font_sizes/font_size = 72
+theme_override_colors/font_color = Color(0.0, 1.0, 0.835, 1)
+
+[node name="NodeSubtitle" type="Label" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = "generating 0.0 bandwidth"
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.45, 0.5, 0.55, 1)
+
+[node name="BuyNodeButton" type="Button" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 4
+custom_minimum_size = Vector2(200, 48)
+text = "[ DEPLOY NODE ]"
+
+[node name="RiskWarning" type="Label" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = ""
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(1.0, 0.3, 0.3, 1)
+
+[node name="DrEventLabel" type="Label" parent="VBoxLayout/ContentHBox/CenterPanel/DashboardView"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+text = ""
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(1.0, 0.6, 0.2, 1)
+
+; --- Map View (toggled) ---
+[node name="MapView" parent="VBoxLayout/ContentHBox/CenterPanel" instance=ExtResource("4")]
+unique_name_in_owner = true
+visible = false
+
+; ===== RIGHT PANEL =====
+[node name="RightPanel" type="PanelContainer" parent="VBoxLayout/ContentHBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_stretch_ratio = 1.0
+
+[node name="RightVBox" type="VBoxContainer" parent="VBoxLayout/ContentHBox/RightPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="TabBar" type="HBoxContainer" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="InfraTab" type="Button" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox/TabBar"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Infra"
+
+[node name="SecurityTab" type="Button" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox/TabBar"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Security"
+
+[node name="IntelTab" type="Button" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox/TabBar"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Intel"
+
+[node name="TabContent" type="PanelContainer" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="UpgradePanel" parent="VBoxLayout/ContentHBox/RightPanel/RightVBox/TabContent" instance=ExtResource("3")]
+layout_mode = 2
+
+; ===== BOTTOM STATUS BAR =====
+[node name="BottomBar" type="PanelContainer" parent="VBoxLayout"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 32)
+
+[node name="StatusLabel" type="Label" parent="VBoxLayout/BottomBar"]
+unique_name_in_owner = true
+layout_mode = 2
+vertical_alignment = 1
+text = "SingularNode v0.3 — Week 3 Build"
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(0.3, 0.35, 0.4, 1)
+
+; ===== RISK PULSE TIMER =====
+[node name="RiskPulseTimer" type="Timer" parent="."]
+unique_name_in_owner = true
+wait_time = 0.5
