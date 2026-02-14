@@ -1,0 +1,2 @@
+# AWESOME-IDLE-GAME
+idk
