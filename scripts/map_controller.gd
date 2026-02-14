@@ -1,13 +1,16 @@
 extends Node
 
 signal region_unlocked(region_id: String)
-signal node_deployed(region_id: String, total: int)
+signal node_deployed(region_id: String, total: int, type_id: String)
 signal region_dr_event(region_id: String, event_type: String)
 signal region_dr_cleared(region_id: String)
 signal selected_region_changed(region_id: String)
 
 var regions: Dictionary = {}
 var selected_region_id: String = ""
+
+# Track deployed node types per region: { region_id: [type_id, type_id, ...] }
+var deployed_nodes: Dictionary = {}
 
 func _ready() -> void:
 	_init_regions()
@@ -28,6 +31,10 @@ func _init_regions() -> void:
 
 	# North Hub starts unlocked
 	regions["north_hub"].unlocked = true
+
+	# Init deployed_nodes arrays
+	for id: String in regions.keys():
+		deployed_nodes[id] = []
 
 func _add_region(id: String, region_name: String, pos: Vector2,
 		threshold: float, max_n: int,
@@ -57,42 +64,67 @@ func select_region(region_id: String) -> void:
 	selected_region_id = region_id
 	selected_region_changed.emit(region_id)
 
-func deploy_node_to_region(region_id: String) -> bool:
+func deploy_node_to_region(region_id: String, type_id: String = "standard") -> bool:
 	if not regions.has(region_id):
 		return false
 	var r: Region = regions[region_id]
 	if not r.unlocked or r.is_full():
 		return false
 
+	var nt: NodeType = NodeTypes.get_type(type_id)
+	if nt == null:
+		return false
+
+	# Pay cost
+	if nt.cost > 0.0:
+		if Resources.influence < nt.cost:
+			return false
+		Resources.influence -= nt.cost
+
 	r.node_count += 1
+	deployed_nodes[region_id].append(type_id)
+
 	Resources.add_node()
 	_apply_map_multipliers()
-	node_deployed.emit(region_id, r.node_count)
+	node_deployed.emit(region_id, r.node_count, type_id)
 	return true
 
 func _apply_map_multipliers() -> void:
 	var total_bw_bonus: float = 0.0
 	var total_dr_bonus: float = 0.0
 	var total_inf_bonus: float = 0.0
-	var total_map_nodes: int = 0
+	var total_type_bw: float = 0.0
+	var total_type_dr: float = 0.0
+	var total_type_inf: float = 0.0
 
-	for r: Region in regions.values():
+	for region_id: String in regions.keys():
+		var r: Region = regions[region_id]
 		if r.node_count <= 0:
 			continue
-		total_map_nodes += r.node_count
+
+		# Region multiplier contributions
 		total_bw_bonus += r.node_count * r.bw_multiplier
 		total_dr_bonus += r.node_count * r.dr_multiplier
 		total_inf_bonus += r.node_count * r.influence_multiplier
 
-	# Apply as additive bonuses on top of existing upgrade multipliers
-	# BW bonus: added into infra_multiplier contribution
+		# Node type contributions
+		for type_id: String in deployed_nodes[region_id]:
+			var nt: NodeType = NodeTypes.get_type(type_id)
+			if nt == null:
+				continue
+			total_type_bw += nt.base_bw
+			total_type_dr += nt.base_dr
+			total_type_inf += nt.influence_per_sec
+
 	Resources.map_bw_bonus = total_bw_bonus
 	Resources.map_dr_bonus = total_dr_bonus
 	Resources.map_inf_bonus = total_inf_bonus
+	Resources.type_total_bw = total_type_bw
+	Resources.type_total_dr = total_type_dr
+	Resources.type_total_inf = total_type_inf
 	Resources.recalculate()
 
 func _on_global_dr_event(event_type: String) -> void:
-	# Find region with highest node count to flash
 	var worst_id: String = ""
 	var worst_count: int = 0
 	for id: String in regions.keys():
@@ -121,3 +153,6 @@ func get_total_map_nodes() -> int:
 	for r: Region in regions.values():
 		total += r.node_count
 	return total
+
+func get_deployed_types(region_id: String) -> Array:
+	return deployed_nodes.get(region_id, [])

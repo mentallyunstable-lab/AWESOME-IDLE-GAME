@@ -7,18 +7,23 @@ var detection_risk: float = 0.0
 var encryption_level: float = 1.0
 var node_count: int = 0
 
-# === Node Stats ===
+# === Node Stats (base defaults, modified by upgrades) ===
 var node_base_output: float = 1.5
 var risk_per_node: float = 3.0
 
-# === Multipliers ===
+# === Multipliers (from upgrades) ===
 var infra_multiplier: float = 0.0
 var efficiency_multiplier: float = 0.1
 
-# === Map Bonuses (set by MapController) ===
+# === Map Bonuses (from region multipliers) ===
 var map_bw_bonus: float = 0.0
 var map_dr_bonus: float = 0.0
 var map_inf_bonus: float = 0.0
+
+# === Node Type Totals (from deployed typed nodes) ===
+var type_total_bw: float = 0.0
+var type_total_dr: float = 0.0
+var type_total_inf: float = 0.0
 
 # === Thresholds ===
 var dr_warning_threshold: float = 50.0
@@ -45,15 +50,17 @@ func add_node() -> void:
 	node_purchased.emit(node_count)
 
 func recalculate() -> void:
-	# Bandwidth = TotalNodes × NodeBase × (1 + InfraMultiplier + MapBwBonus) × PenaltyMultiplier
-	bandwidth = node_count * node_base_output * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
+	# BW = (NodeCount * NodeBase + TypeTotalBw) * (1 + InfraMult + MapBwBonus) * PenaltyMult
+	var base_bw: float = node_count * node_base_output + type_total_bw
+	bandwidth = base_bw * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
 
-	# Detection Risk = Nodes × RiskPerNode × (1 - SecurityReduction + MapDrBonus)
+	# DR = (NodeCount * RiskPerNode + TypeTotalDr) * (1 - SecurityReduction + MapDrBonus)
 	var dr_reduction: float = 0.0
 	if is_instance_valid(Upgrades):
 		dr_reduction = Upgrades.get_dr_reduction()
+	var base_dr: float = node_count * risk_per_node + type_total_dr
 	var dr_factor: float = maxf(0.0, 1.0 - dr_reduction + map_dr_bonus)
-	detection_risk = node_count * risk_per_node * dr_factor
+	detection_risk = base_dr * dr_factor
 
 	# Clamp DR to 0-100 range
 	detection_risk = clampf(detection_risk, 0.0, 100.0)
@@ -72,8 +79,8 @@ func _check_dr_events() -> void:
 		bw_penalty_active = true
 		bw_penalty_multiplier = 0.9
 		dr_event_triggered.emit("slowdown")
-		# Recalc BW with penalty (avoid recursion via flag check above)
-		bandwidth = node_count * node_base_output * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
+		var base_bw: float = node_count * node_base_output + type_total_bw
+		bandwidth = base_bw * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
 
 		var timer := get_tree().create_timer(5.0)
 		timer.timeout.connect(_clear_bw_penalty)
@@ -93,13 +100,12 @@ func _process(delta: float) -> void:
 	if node_count <= 0:
 		return
 
-	# Influence/sec = Bandwidth × (EfficiencyMultiplier + MapInfBonus)
-	var influence_per_sec: float = bandwidth * (efficiency_multiplier + map_inf_bonus)
+	# Influence/sec = BW * (EfficiencyMult + MapInfBonus) + TypeTotalInf
+	var influence_per_sec: float = bandwidth * (efficiency_multiplier + map_inf_bonus) + type_total_inf
 	influence += influence_per_sec * delta
 
 	resources_updated.emit()
 
-# Clear alert state when DR drops
 func clear_dr_alert() -> void:
 	dr_alert_active = false
 	dr_event_cleared.emit("alert")
@@ -117,4 +123,4 @@ func get_encryption_display() -> String:
 	return "Lv. %d" % int(encryption_level)
 
 func get_influence_rate() -> float:
-	return bandwidth * (efficiency_multiplier + map_inf_bonus)
+	return bandwidth * (efficiency_multiplier + map_inf_bonus) + type_total_inf
