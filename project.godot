@@ -16,9 +16,12 @@ config/features=PackedStringArray("4.5")
 
 [autoload]
 
+GameConfig="*res://scripts/game_config.gd"
+GameState="*res://scripts/game_state.gd"
+TickEngine="*res://scripts/tick_engine.gd"
 Resources="*res://scripts/resources.gd"
 Upgrades="*res://scripts/upgrades.gd"
-MapController="*res://scripts/map_controller.gd"
+EventSystem="*res://scripts/event_system.gd"
 
 [display]
 

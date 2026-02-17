@@ -1,14 +1,16 @@
 extends VBoxContainer
+## upgrade_panel.gd — Dynamic upgrade list UI.
+## Reads upgrade definitions from GameConfig, state from Upgrades facade.
 
 const CATEGORY_COLORS := {
-	"infra": Color(0.0, 1.0, 0.835, 1),
-	"security": Color(1.0, 0.4, 0.4, 1),
-	"intel": Color(0.7, 0.4, 1.0, 1),
+	"router": Color(0.0, 1.0, 0.835, 1),
+	"encryption": Color(1.0, 0.4, 0.4, 1),
+	"hardware": Color(0.7, 0.4, 1.0, 1),
 }
 
 @onready var upgrade_list: VBoxContainer = %UpgradeList
 
-var current_category: String = "infra"
+var current_category: String = "router"
 var _upgrade_rows: Dictionary = {}
 var _locked_ids: Array[String] = []
 
@@ -26,22 +28,23 @@ func _rebuild_list() -> void:
 	_upgrade_rows.clear()
 	_locked_ids.clear()
 
-	var dict := Upgrades.get_upgrades_for_category(current_category)
+	var upgrades := Upgrades.get_upgrades_for_category(current_category)
 	var accent: Color = CATEGORY_COLORS.get(current_category, Color.WHITE)
 
-	for upgrade_id: String in dict.keys():
-		var u: Upgrade = dict[upgrade_id]
-		if u.is_locked(Resources.influence):
-			var row := _create_locked_upgrade_row(u)
+	for def: Dictionary in upgrades:
+		var uid: String = def["id"]
+		if Upgrades.is_locked(uid):
+			var row := _create_locked_row(def)
 			upgrade_list.add_child(row)
-			_upgrade_rows[u.id] = row
-			_locked_ids.append(u.id)
+			_upgrade_rows[uid] = row
+			_locked_ids.append(uid)
 		else:
-			var row := _create_upgrade_row(u, accent)
+			var row := _create_upgrade_row(def, accent)
 			upgrade_list.add_child(row)
-			_upgrade_rows[u.id] = row
+			_upgrade_rows[uid] = row
 
-func _create_upgrade_row(u: Upgrade, accent: Color) -> PanelContainer:
+func _create_upgrade_row(def: Dictionary, accent: Color) -> PanelContainer:
+	var uid: String = def["id"]
 	var panel := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(accent.r, accent.g, accent.b, 0.05)
@@ -62,15 +65,16 @@ func _create_upgrade_row(u: Upgrade, accent: Color) -> PanelContainer:
 	hbox.add_child(name_vbox)
 
 	var label_name := Label.new()
-	label_name.text = u.name
+	label_name.text = def.get("name", "")
 	label_name.add_theme_font_size_override("font_size", 15)
 	label_name.add_theme_color_override("font_color", accent)
 	name_vbox.add_child(label_name)
 
 	var label_desc := Label.new()
-	label_desc.text = u.description.split("\n")[0]
+	var desc: String = def.get("description", "")
+	label_desc.text = desc.split("\n")[0] if desc != "" else ""
 	label_desc.add_theme_font_size_override("font_size", 11)
-	label_desc.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55, 1))
+	label_desc.add_theme_color_override("font_color", GameConfig.COLOR_MUTED)
 	name_vbox.add_child(label_desc)
 
 	# Level column
@@ -81,7 +85,7 @@ func _create_upgrade_row(u: Upgrade, accent: Color) -> PanelContainer:
 	label_level.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label_level.add_theme_font_size_override("font_size", 14)
 	label_level.add_theme_color_override("font_color", Color(0.7, 0.75, 0.8, 1))
-	_update_level_text(label_level, u)
+	_update_level_text(label_level, uid)
 	hbox.add_child(label_level)
 
 	# Cost column
@@ -91,8 +95,8 @@ func _create_upgrade_row(u: Upgrade, accent: Color) -> PanelContainer:
 	label_cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label_cost.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label_cost.add_theme_font_size_override("font_size", 13)
-	label_cost.add_theme_color_override("font_color", Color(0.45, 0.5, 0.55, 1))
-	_update_cost_text(label_cost, u)
+	label_cost.add_theme_color_override("font_color", GameConfig.COLOR_MUTED)
+	_update_cost_text(label_cost, uid)
 	hbox.add_child(label_cost)
 
 	# Buy button
@@ -100,14 +104,14 @@ func _create_upgrade_row(u: Upgrade, accent: Color) -> PanelContainer:
 	btn.name = "BuyButton"
 	btn.custom_minimum_size = Vector2(70, 32)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_END
-	_update_button_state(btn, u)
-	btn.pressed.connect(_on_buy_pressed.bind(u.id))
-	btn.tooltip_text = u.get_tooltip()
+	_update_button_state(btn, uid)
+	btn.pressed.connect(_on_buy_pressed.bind(uid))
+	btn.tooltip_text = Upgrades.get_tooltip(uid)
 	hbox.add_child(btn)
 
 	return panel
 
-func _create_locked_upgrade_row(u: Upgrade) -> PanelContainer:
+func _create_locked_row(def: Dictionary) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var style := StyleBoxFlat.new()
 	style.bg_color = Color(0.1, 0.12, 0.15, 0.4)
@@ -126,37 +130,40 @@ func _create_locked_upgrade_row(u: Upgrade) -> PanelContainer:
 	hbox.add_child(name_vbox)
 
 	var label_name := Label.new()
-	label_name.text = u.name + " [LOCKED]"
+	label_name.text = def.get("name", "") + " [LOCKED]"
 	label_name.add_theme_font_size_override("font_size", 14)
 	label_name.add_theme_color_override("font_color", Color(0.35, 0.38, 0.42, 0.6))
 	name_vbox.add_child(label_name)
 
 	var req_label := Label.new()
-	req_label.text = "Requires %d Influence" % int(u.unlock_influence)
+	req_label.text = "Requires %d Influence" % int(def.get("unlock_influence", 0.0))
 	req_label.add_theme_font_size_override("font_size", 11)
 	req_label.add_theme_color_override("font_color", Color(0.3, 0.33, 0.37, 0.5))
 	name_vbox.add_child(req_label)
 
 	return panel
 
-func _update_level_text(label: Label, u: Upgrade) -> void:
-	if u.is_maxed():
+func _update_level_text(label: Label, uid: String) -> void:
+	var def := Upgrades.get_upgrade_def(uid)
+	var level: int = Upgrades.get_upgrade_level(uid)
+	var max_level: int = def.get("max_level", 5)
+	if level >= max_level:
 		label.text = "MAX"
 		label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3, 1))
 	else:
-		label.text = "Lv. %d/%d" % [u.level, u.max_level]
+		label.text = "Lv. %d/%d" % [level, max_level]
 
-func _update_cost_text(label: Label, u: Upgrade) -> void:
-	if u.is_maxed():
-		label.text = "—"
+func _update_cost_text(label: Label, uid: String) -> void:
+	if Upgrades.is_maxed(uid):
+		label.text = "\u2014"
 	else:
-		label.text = "%d Inf" % int(u.get_cost())
+		label.text = "%d Inf" % int(Upgrades.get_cost(uid))
 
-func _update_button_state(btn: Button, u: Upgrade) -> void:
-	if u.is_maxed():
+func _update_button_state(btn: Button, uid: String) -> void:
+	if Upgrades.is_maxed(uid):
 		btn.text = "MAXED"
 		btn.disabled = true
-	elif u.can_afford(Resources.influence):
+	elif Upgrades.can_afford(uid):
 		btn.text = "BUY"
 		btn.disabled = false
 	else:
@@ -168,34 +175,34 @@ func _on_buy_pressed(upgrade_id: String) -> void:
 		_flash_row(upgrade_id)
 
 func _on_upgrade_purchased(_upgrade_id: String) -> void:
-	# Rebuild entirely to handle newly unlocked upgrades
 	_rebuild_list()
 
 func _refresh_button_states() -> void:
 	# Check if any locked upgrades should now be unlocked
 	if _locked_ids.size() > 0:
-		var dict := Upgrades.get_upgrades_for_category(current_category)
 		for lid: String in _locked_ids:
-			if dict.has(lid):
-				var u: Upgrade = dict[lid]
-				if not u.is_locked(Resources.influence):
-					_rebuild_list()
-					return
+			if not Upgrades.is_locked(lid):
+				_rebuild_list()
+				return
 
-	var dict := Upgrades.get_upgrades_for_category(current_category)
-	for upgrade_id: String in _upgrade_rows.keys():
-		if _locked_ids.has(upgrade_id):
+	for uid: String in _upgrade_rows.keys():
+		if _locked_ids.has(uid):
 			continue
-		if not dict.has(upgrade_id):
-			continue
-		var u: Upgrade = dict[upgrade_id]
-		var row: PanelContainer = _upgrade_rows[upgrade_id]
+		var row: PanelContainer = _upgrade_rows[uid]
 		var hbox: HBoxContainer = row.get_child(0)
+
+		var level_label: Label = hbox.get_node_or_null("LevelLabel")
+		if level_label:
+			_update_level_text(level_label, uid)
+
+		var cost_label: Label = hbox.get_node_or_null("CostLabel")
+		if cost_label:
+			_update_cost_text(cost_label, uid)
 
 		var btn: Button = hbox.get_node_or_null("BuyButton")
 		if btn:
-			_update_button_state(btn, u)
-			btn.tooltip_text = u.get_tooltip()
+			_update_button_state(btn, uid)
+			btn.tooltip_text = Upgrades.get_tooltip(uid)
 
 func _flash_row(upgrade_id: String) -> void:
 	if not _upgrade_rows.has(upgrade_id):
