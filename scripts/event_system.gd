@@ -1,6 +1,17 @@
 extends Node
 ## event_system.gd — Random event engine.
-## Fires events at random intervals, applies modifiers, expires them cleanly.
+##
+## === EVENT LIFECYCLE ===
+## 1. Spawn: _spawn_random_event() picks from tier events, creates entry
+## 2. Apply: _apply_combined_modifiers() sets GameState event modifiers
+## 3. Tick: _update_active_events(delta) decrements remaining time
+## 4. Expire: remaining <= 0 -> remove -> _apply_combined_modifiers() recalc
+## 5. Manual repair: repair_event(id) -> immediate removal
+##
+## Modifier stacking:
+##   BW multipliers: multiplicative (0.5 * 0.8 = 0.4)
+##   Node disable: boolean OR (any event disabling = all disabled)
+##   DR spikes: immediate one-time addition to DR resource
 
 signal event_started(event_data: Dictionary)
 signal event_ended(event_id: String)
@@ -51,7 +62,6 @@ func _update_active_events(delta: float) -> void:
 
 	for i in range(_active_events.size()):
 		var entry: Dictionary = _active_events[i]
-		var def: Dictionary = entry["def"]
 		var remaining: float = entry["remaining"]
 
 		# Manual repair events don't tick down
@@ -66,7 +76,6 @@ func _update_active_events(delta: float) -> void:
 	expired.reverse()
 	for idx: int in expired:
 		var entry: Dictionary = _active_events[idx]
-		_remove_event_modifiers(entry["def"])
 		event_ended.emit(entry["def"]["id"])
 		_active_events.remove_at(idx)
 
@@ -87,25 +96,29 @@ func _spawn_random_event() -> void:
 		return
 
 	var chosen: Dictionary = available[randi() % available.size()]
+	_activate_event(chosen)
+
+func _activate_event(evt: Dictionary) -> void:
 	var entry: Dictionary = {
-		"def": chosen,
-		"remaining": chosen.get("duration", 10.0),
+		"def": evt,
+		"remaining": evt.get("duration", 10.0),
 	}
 
 	# Apply immediate DR spike if any
-	var dr_spike: float = chosen.get("dr_spike", 0.0)
+	var dr_spike: float = evt.get("dr_spike", 0.0)
 	if dr_spike > 0.0:
 		GameState.add_resource("detection_risk", dr_spike)
 
 	_active_events.append(entry)
 	GameState.active_events = _active_events
 
-	if chosen.get("duration", 0.0) < 0.0:
-		event_requires_repair.emit(chosen["id"])
-	event_started.emit(chosen)
+	if evt.get("duration", 0.0) < 0.0:
+		event_requires_repair.emit(evt["id"])
+	event_started.emit(evt)
+
+	_apply_combined_modifiers()
 
 func _apply_combined_modifiers() -> void:
-	# Reset event modifiers
 	var combined_bw_mult: float = 1.0
 	var nodes_off: bool = false
 
@@ -122,10 +135,6 @@ func _apply_combined_modifiers() -> void:
 
 	GameState.event_bw_multiplier = combined_bw_mult
 	GameState.event_nodes_disabled = nodes_off
-
-func _remove_event_modifiers(_def: Dictionary) -> void:
-	# Modifiers are recalculated combinatorially, no individual removal needed
-	pass
 
 func repair_event(event_id: String) -> void:
 	for i in range(_active_events.size()):
@@ -151,3 +160,34 @@ func clear_all_events() -> void:
 	GameState.event_bw_multiplier = 1.0
 	GameState.event_nodes_disabled = false
 	GameState.active_events = _active_events
+
+# === DEBUG ===
+
+func force_trigger_event(event_id: String) -> void:
+	for evt: Dictionary in GameConfig.get_events_for_tier(GameState.tier):
+		if evt["id"] == event_id:
+			_activate_event(evt)
+			print("[EventDebug] Force triggered: %s" % event_id)
+			return
+	print("[EventDebug] Event not found: %s" % event_id)
+
+func force_trigger_all_events() -> void:
+	print("[EventDebug] === FORCING ALL EVENTS ===")
+	for evt: Dictionary in GameConfig.get_events_for_tier(GameState.tier):
+		if not has_active_event(evt["id"]):
+			_activate_event(evt)
+	print("[EventDebug] Active events: %d" % _active_events.size())
+	print_active_modifiers()
+
+func print_active_modifiers() -> void:
+	print("[EventDebug] === ACTIVE MODIFIERS ===")
+	print("  event_bw_multiplier: %.3f" % GameState.event_bw_multiplier)
+	print("  event_nodes_disabled: %s" % str(GameState.event_nodes_disabled))
+	for entry: Dictionary in _active_events:
+		var def: Dictionary = entry["def"]
+		print("  [%s] %s = %s (%.1fs)" % [
+			def.get("id", "?"),
+			def.get("modifier_type", "?"),
+			str(def.get("modifier_value", 0)),
+			entry["remaining"],
+		])

@@ -42,6 +42,19 @@ var risk_pulse_on: bool = false
 var risk_is_critical: bool = false
 var _last_node_count: int = 0
 
+# === DEBUG PANEL STATE ===
+var _debug_visible: bool = false
+var _debug_panel: PanelContainer
+var _debug_labels: Dictionary = {}
+var _inf_samples: Array = []
+var _sample_accumulator: float = 0.0
+var _event_uptime_total: float = 0.0
+var _game_time_total: float = 0.0
+
+# === SPEED CYCLE ===
+const SPEED_STEPS: Array = [1.0, 2.0, 5.0, 10.0]
+var _speed_index: int = 0
+
 # === TAB COLORS ===
 const TAB_COLORS := {
 	"router": Color(0.0, 1.0, 0.835, 1),
@@ -83,6 +96,122 @@ func _ready() -> void:
 	tier_label.text = "TIER %d // %s" % [GameState.tier, GameConfig.get_tier_name(GameState.tier).to_upper()]
 	_on_tab_pressed("router")
 	_update_display()
+
+	# Build debug panel programmatically
+	_build_debug_panel()
+
+# === DEBUG PANEL (programmatic) ===
+
+func _build_debug_panel() -> void:
+	_debug_panel = PanelContainer.new()
+	_debug_panel.visible = false
+	_debug_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_debug_panel.offset_left = -280
+	_debug_panel.offset_right = 0
+	_debug_panel.offset_top = 8
+	_debug_panel.offset_bottom = 0
+	_debug_panel.custom_minimum_size = Vector2(270, 0)
+
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.055, 0.067, 0.086, 0.9)
+	style.border_color = Color(0.0, 1.0, 0.835, 0.3)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(4)
+	style.set_content_margin_all(10)
+	_debug_panel.add_theme_stylebox_override("panel", style)
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 4)
+	_debug_panel.add_child(vbox)
+
+	var title := Label.new()
+	title.text = "// DEBUG STATS (F3)"
+	title.add_theme_font_size_override("font_size", 11)
+	title.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
+	vbox.add_child(title)
+
+	var fields := ["avg_inf", "dr_rate", "node_eff", "event_uptime", "game_speed"]
+	for field: String in fields:
+		var label := Label.new()
+		label.text = field
+		label.add_theme_font_size_override("font_size", 11)
+		label.add_theme_color_override("font_color", GameConfig.COLOR_MUTED)
+		vbox.add_child(label)
+		_debug_labels[field] = label
+
+	add_child(_debug_panel)
+
+# === INPUT HANDLING ===
+
+func _input(event: InputEvent) -> void:
+	if not event is InputEventKey or not event.pressed:
+		return
+
+	match event.keycode:
+		KEY_F3:
+			_debug_visible = not _debug_visible
+			_debug_panel.visible = _debug_visible
+		KEY_F4:
+			_inf_samples.clear()
+			_event_uptime_total = 0.0
+			_game_time_total = 0.0
+			print("[Debug] Stats reset")
+		KEY_F5:
+			_speed_index = (_speed_index + 1) % SPEED_STEPS.size()
+			TickEngine.set_speed(SPEED_STEPS[_speed_index])
+		KEY_F8:
+			GameState.debug_stress_test()
+		KEY_F9:
+			EventSystem.force_trigger_all_events()
+		KEY_F10:
+			EventSystem.clear_all_events()
+			print("[Debug] All events cleared")
+		KEY_F11:
+			GameState.soft_reset(GameState.tier)
+
+# === DEBUG UPDATE ===
+
+func _process(delta: float) -> void:
+	if not _debug_visible:
+		return
+
+	# Sample influence rate every second
+	_sample_accumulator += delta
+	if _sample_accumulator >= 1.0:
+		_sample_accumulator -= 1.0
+		_inf_samples.append(Resources.get_influence_rate())
+		if _inf_samples.size() > 60:
+			_inf_samples.pop_front()
+
+	# Average influence/sec
+	var avg_inf: float = 0.0
+	if _inf_samples.size() > 0:
+		var total: float = 0.0
+		for sample: float in _inf_samples:
+			total += sample
+		avg_inf = total / float(_inf_samples.size())
+
+	# DR rate
+	var dr_rate: float = GameState.get_per_second("detection_risk")
+
+	# Node efficiency
+	var nc: int = GameState.get_node_count()
+	var node_eff: float = avg_inf / maxf(1.0, float(nc))
+
+	# Event uptime
+	_game_time_total += delta
+	if EventSystem.get_active_events().size() > 0:
+		_event_uptime_total += delta
+	var uptime_pct: float = 0.0
+	if _game_time_total > 0.0:
+		uptime_pct = (_event_uptime_total / _game_time_total) * 100.0
+
+	# Update labels
+	_debug_labels["avg_inf"].text = "Avg Inf/s (60s): %.2f" % avg_inf
+	_debug_labels["dr_rate"].text = "DR Rate: %+.3f/s" % dr_rate
+	_debug_labels["node_eff"].text = "Node Eff: %.3f inf/s/node" % node_eff
+	_debug_labels["event_uptime"].text = "Event Uptime: %.1f%%" % uptime_pct
+	_debug_labels["game_speed"].text = "Speed: %.0fx" % TickEngine.get_speed()
 
 # === NODE ACTIONS ===
 
@@ -207,29 +336,26 @@ func _rebuild_node_grid() -> void:
 # === OBJECTIVES ===
 
 func _update_objectives() -> void:
-	var inf: float = GameState.get_resource("influence")
-	var dr: float = GameState.get_resource("detection_risk")
 	var cfg := GameConfig.get_tier_config(GameState.tier)
-	var condition: Dictionary = cfg.get("unlock_condition", {})
-	var inf_target: float = condition.get("influence_min", 500.0)
-	var dr_target: float = condition.get("detection_risk_below", 70.0)
+	var objectives: Array = cfg.get("unlock_objectives", [])
 
-	var inf_met: bool = inf >= inf_target
-	var dr_met: bool = dr < dr_target
+	if objectives.size() > 0:
+		var progress := GameState.get_objective_progress(objectives[0])
+		if progress["met"]:
+			objective_influence.text = "[x] %s" % progress["label"]
+			objective_influence.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
+		else:
+			objective_influence.text = "[ ] %s (%s)" % [progress["label"], progress["progress"]]
+			objective_influence.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
 
-	if inf_met:
-		objective_influence.text = "[x] Reach %.0f Influence" % inf_target
-		objective_influence.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
-	else:
-		objective_influence.text = "[ ] Reach %.0f Influence (%.0f / %.0f)" % [inf_target, inf, inf_target]
-		objective_influence.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
-
-	if dr_met:
-		objective_dr.text = "[x] Detection Risk < %.0f%%" % dr_target
-		objective_dr.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
-	else:
-		objective_dr.text = "[ ] Detection Risk < %.0f%% (%.1f%%)" % [dr_target, dr]
-		objective_dr.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
+	if objectives.size() > 1:
+		var progress := GameState.get_objective_progress(objectives[1])
+		if progress["met"]:
+			objective_dr.text = "[x] %s" % progress["label"]
+			objective_dr.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
+		else:
+			objective_dr.text = "[ ] %s (%s)" % [progress["label"], progress["progress"]]
+			objective_dr.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
 
 # === EVENT DISPLAY ===
 
@@ -309,8 +435,12 @@ func _on_risk_warning(level: float) -> void:
 
 	var cfg := GameConfig.get_tier_config(GameState.tier)
 	var dr_danger: float = cfg.get("dr_danger_threshold", 85.0)
-	var condition: Dictionary = cfg.get("unlock_condition", {})
-	var dr_target: float = condition.get("detection_risk_below", 70.0)
+	var objectives: Array = cfg.get("unlock_objectives", [])
+	var dr_target: float = 70.0
+	for obj: Dictionary in objectives:
+		if obj.get("type", "") == "detection_risk_below":
+			dr_target = obj.get("value", 70.0)
+			break
 
 	if level >= dr_danger:
 		risk_warning.text = "!! CRITICAL EXPOSURE — DETECTION IMMINENT !!"

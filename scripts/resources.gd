@@ -1,11 +1,26 @@
 extends Node
 ## resources.gd — Resource calculation engine.
-## Connects to TickEngine, reads/writes GameState.
-## Handles bandwidth generation, influence accumulation, and DR pressure.
+##
+## === TICK FLOW ===
+## 1. TickEngine.game_tick(delta) -> _on_tick(delta)
+## 2. _update_bandwidth() -> modifier pipeline -> GameState.set_resource()
+## 3. _update_influence(delta) -> modifier pipeline -> GameState.add_resource()
+## 4. _update_detection_risk(delta) -> nonlinear scaling + pipeline -> clamp 0-100
+## 5. _update_energy(delta) -> Tier 1+ only, hidden resource
+## 6. resources_updated signal -> UI refreshes
+##
+## All calculations route through GameState.ModifierPipeline.apply().
+## Upgrade modifiers are additive, event modifiers are multiplicative.
+##
+## Slow tick:
+## 1. _check_unlock_conditions() -> GameState.check_unlock_objectives()
+## 2. _check_dr_thresholds() -> warnings or soft reset
 
 signal resources_updated
 signal risk_warning(level: float)
 signal soft_reset_triggered
+
+const INFLUENCE_CAP: float = 1000000.0
 
 func _ready() -> void:
 	TickEngine.game_tick.connect(_on_tick)
@@ -18,6 +33,11 @@ func _on_tick(delta: float) -> void:
 	_update_bandwidth()
 	_update_influence(delta)
 	_update_detection_risk(delta)
+
+	# Hidden energy resource (Tier 1+)
+	if GameState.tier >= 1:
+		_update_energy(delta)
+
 	resources_updated.emit()
 
 func _on_slow_tick() -> void:
@@ -25,56 +45,101 @@ func _on_slow_tick() -> void:
 	_check_dr_thresholds()
 
 # === BANDWIDTH ===
-# BW = sum(node BW) * (1 + bw_multiplier) * event_multiplier
+# BW = sum(node BW) * pipeline(1.0, bw_modifiers)
 
 func _update_bandwidth() -> void:
-	if GameState.event_nodes_disabled:
+	# Check node disable modifiers
+	var disable_mods := GameState.get_modifiers_for_effect("nodes_disabled")
+	if GameState.ModifierPipeline.apply_bool_or(disable_mods):
 		GameState.set_resource("bandwidth", 0.0)
 		GameState.set_per_second("bandwidth", 0.0)
 		return
 
 	var raw_bw: float = GameState.get_node_total_bw()
-	var total_bw: float = raw_bw * (1.0 + GameState.bw_multiplier) * GameState.event_bw_multiplier
+
+	# Apply BW multiplier modifiers (upgrades additive + events multiplicative)
+	var bw_mods := GameState.get_modifiers_for_effect("bw_multiplier")
+	var total_bw: float = GameState.ModifierPipeline.apply(raw_bw, bw_mods)
+	total_bw = maxf(total_bw, 0.0)
+
+	if is_nan(total_bw) or is_inf(total_bw):
+		push_error("[Resources] BW produced NaN/Inf — clamping to 0")
+		total_bw = 0.0
+
 	GameState.set_resource("bandwidth", total_bw)
 	GameState.set_per_second("bandwidth", total_bw)
 
 # === INFLUENCE ===
-# Influence/sec = BW * (base_efficiency + efficiency_bonus)
+# Influence/sec = BW * pipeline(base_efficiency, efficiency_modifiers)
 
 func _update_influence(delta: float) -> void:
 	var cfg := GameConfig.get_tier_config(GameState.tier)
 	var base_eff: float = cfg.get("base_efficiency", 0.05)
 	var bw: float = GameState.get_resource("bandwidth")
-	var inf_per_sec: float = bw * (base_eff + GameState.efficiency_bonus)
+
+	# Apply efficiency modifiers through pipeline
+	var eff_mods := GameState.get_modifiers_for_effect("efficiency")
+	var total_eff: float = GameState.ModifierPipeline.apply(base_eff, eff_mods)
+
+	var inf_per_sec: float = bw * total_eff
+	inf_per_sec = maxf(inf_per_sec, 0.0)
+
+	if is_nan(inf_per_sec) or is_inf(inf_per_sec):
+		push_error("[Resources] Influence rate produced NaN/Inf — clamping to 0")
+		inf_per_sec = 0.0
+
 	GameState.set_per_second("influence", inf_per_sec)
 	GameState.add_resource("influence", inf_per_sec * delta)
 
+	# Safety cap
+	if GameState.get_resource("influence") > INFLUENCE_CAP:
+		GameState.set_resource("influence", INFLUENCE_CAP)
+
 # === DETECTION RISK ===
-# DR += nodes * dr_gain_per_node * (1 - dr_reduction) per second
-# DR -= (dr_passive_decay + dr_decay_bonus) per second
-# Clamp 0-100
+# Nonlinear: dr_gain = pow(nodes, exponent) * gain_per_node * (1 - dr_reduction)
+# Decay: passive_decay + dr_decay_bonus
+# Clamped 0-100
 
 func _update_detection_risk(delta: float) -> void:
 	var cfg := GameConfig.get_tier_config(GameState.tier)
 	var node_count: int = GameState.get_node_count()
 	var gain_per_node: float = cfg.get("dr_gain_per_node", 0.02)
 	var passive_decay: float = cfg.get("dr_passive_decay", 0.01)
+	var dr_exponent: float = cfg.get("dr_scale_exponent", 1.12)
 
-	# DR gain reduced by encryption upgrades
-	var reduction_factor: float = maxf(0.0, 1.0 - GameState.dr_reduction)
-	var dr_gain: float = node_count * gain_per_node * reduction_factor
+	# Nonlinear node scaling
+	var base_dr_gain: float = pow(float(node_count), dr_exponent) * gain_per_node
 
-	# DR decay boosted by stealth upgrades
-	var dr_decay: float = passive_decay + GameState.dr_decay_bonus
+	# Apply DR reduction modifiers
+	var dr_red_mods := GameState.get_modifiers_for_effect("dr_reduction")
+	var total_reduction: float = GameState.ModifierPipeline.apply(0.0, dr_red_mods)
+	var reduction_factor: float = maxf(0.0, 1.0 - total_reduction)
+
+	var dr_gain: float = base_dr_gain * reduction_factor
+	dr_gain = maxf(dr_gain, 0.0)
+
+	# Apply DR decay modifiers
+	var decay_mods := GameState.get_modifiers_for_effect("dr_decay")
+	var dr_decay: float = GameState.ModifierPipeline.apply(passive_decay, decay_mods)
+	dr_decay = maxf(dr_decay, 0.0)
 
 	var current_dr: float = GameState.get_resource("detection_risk")
 	var new_dr: float = current_dr + (dr_gain - dr_decay) * delta
 	new_dr = clampf(new_dr, 0.0, 100.0)
 	GameState.set_resource("detection_risk", new_dr)
 
-	# Per-second rate for display
 	var net_rate: float = dr_gain - dr_decay
 	GameState.set_per_second("detection_risk", net_rate)
+
+# === ENERGY (Tier 1+ hidden resource) ===
+
+func _update_energy(delta: float) -> void:
+	var node_count: int = GameState.get_node_count()
+	var energy_per_node: float = 0.1  # Placeholder rate
+	var energy_rate: float = float(node_count) * energy_per_node
+
+	GameState.set_per_second("energy", energy_rate)
+	GameState.add_resource("energy", energy_rate * delta)
 
 # === THRESHOLD CHECKS ===
 
