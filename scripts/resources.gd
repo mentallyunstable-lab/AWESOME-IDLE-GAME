@@ -1,126 +1,126 @@
 extends Node
+## resources.gd — Resource calculation engine.
+## Connects to TickEngine, reads/writes GameState.
+## Handles bandwidth generation, influence accumulation, and DR pressure.
 
-# === Core Resources ===
-var bandwidth: float = 0.0
-var influence: float = 0.0
-var detection_risk: float = 0.0
-var encryption_level: float = 1.0
-var node_count: int = 0
-
-# === Node Stats (base defaults, modified by upgrades) ===
-var node_base_output: float = 1.5
-var risk_per_node: float = 3.0
-
-# === Multipliers (from upgrades) ===
-var infra_multiplier: float = 0.0
-var efficiency_multiplier: float = 0.1
-
-# === Map Bonuses (from region multipliers) ===
-var map_bw_bonus: float = 0.0
-var map_dr_bonus: float = 0.0
-var map_inf_bonus: float = 0.0
-
-# === Node Type Totals (from deployed typed nodes) ===
-var type_total_bw: float = 0.0
-var type_total_dr: float = 0.0
-var type_total_inf: float = 0.0
-
-# === Thresholds ===
-var dr_warning_threshold: float = 50.0
-
-# === DR Event State ===
-var bw_penalty_active: bool = false
-var bw_penalty_multiplier: float = 1.0
-var dr_alert_active: bool = false
-
-# === Signals ===
 signal resources_updated
 signal risk_warning(level: float)
-signal node_purchased(total: int)
-signal dr_event_triggered(event_type: String)
-signal dr_event_cleared(event_type: String)
-signal stat_changed(stat_name: String)
+signal soft_reset_triggered
 
 func _ready() -> void:
-	recalculate()
+	TickEngine.game_tick.connect(_on_tick)
+	TickEngine.slow_tick.connect(_on_slow_tick)
 
-func add_node() -> void:
-	node_count += 1
-	recalculate()
-	node_purchased.emit(node_count)
-
-func recalculate() -> void:
-	# BW = (NodeCount * NodeBase + TypeTotalBw) * (1 + InfraMult + MapBwBonus) * PenaltyMult
-	var base_bw: float = node_count * node_base_output + type_total_bw
-	bandwidth = base_bw * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
-
-	# DR = (NodeCount * RiskPerNode + TypeTotalDr) * (1 - SecurityReduction + MapDrBonus)
-	var dr_reduction: float = 0.0
-	if is_instance_valid(Upgrades):
-		dr_reduction = Upgrades.get_dr_reduction()
-	var base_dr: float = node_count * risk_per_node + type_total_dr
-	var dr_factor: float = maxf(0.0, 1.0 - dr_reduction + map_dr_bonus)
-	detection_risk = base_dr * dr_factor
-
-	# Clamp DR to 0-100 range
-	detection_risk = clampf(detection_risk, 0.0, 100.0)
-
-	# DR events
-	_check_dr_events()
-
-	resources_updated.emit()
-
-	if detection_risk >= dr_warning_threshold:
-		risk_warning.emit(detection_risk)
-
-func _check_dr_events() -> void:
-	# DR > 60 → Node slowdown (-10% BW for 5s)
-	if detection_risk > 60.0 and not bw_penalty_active:
-		bw_penalty_active = true
-		bw_penalty_multiplier = 0.9
-		dr_event_triggered.emit("slowdown")
-		var base_bw: float = node_count * node_base_output + type_total_bw
-		bandwidth = base_bw * (1.0 + infra_multiplier + map_bw_bonus) * bw_penalty_multiplier
-
-		var timer := get_tree().create_timer(5.0)
-		timer.timeout.connect(_clear_bw_penalty)
-
-	# DR > 80 → Alert popup
-	if detection_risk > 80.0 and not dr_alert_active:
-		dr_alert_active = true
-		dr_event_triggered.emit("alert")
-
-func _clear_bw_penalty() -> void:
-	bw_penalty_active = false
-	bw_penalty_multiplier = 1.0
-	dr_event_cleared.emit("slowdown")
-	recalculate()
-
-func _process(delta: float) -> void:
-	if node_count <= 0:
+func _on_tick(delta: float) -> void:
+	if GameState.get_node_count() <= 0:
 		return
 
-	# Influence/sec = BW * (EfficiencyMult + MapInfBonus) + TypeTotalInf
-	var influence_per_sec: float = bandwidth * (efficiency_multiplier + map_inf_bonus) + type_total_inf
-	influence += influence_per_sec * delta
-
+	_update_bandwidth()
+	_update_influence(delta)
+	_update_detection_risk(delta)
 	resources_updated.emit()
 
-func clear_dr_alert() -> void:
-	dr_alert_active = false
-	dr_event_cleared.emit("alert")
+func _on_slow_tick() -> void:
+	_check_unlock_conditions()
+	_check_dr_thresholds()
+
+# === BANDWIDTH ===
+# BW = sum(node BW) * (1 + bw_multiplier) * event_multiplier
+
+func _update_bandwidth() -> void:
+	if GameState.event_nodes_disabled:
+		GameState.set_resource("bandwidth", 0.0)
+		GameState.set_per_second("bandwidth", 0.0)
+		return
+
+	var raw_bw: float = GameState.get_node_total_bw()
+	var total_bw: float = raw_bw * (1.0 + GameState.bw_multiplier) * GameState.event_bw_multiplier
+	GameState.set_resource("bandwidth", total_bw)
+	GameState.set_per_second("bandwidth", total_bw)
+
+# === INFLUENCE ===
+# Influence/sec = BW * (base_efficiency + efficiency_bonus)
+
+func _update_influence(delta: float) -> void:
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var base_eff: float = cfg.get("base_efficiency", 0.05)
+	var bw: float = GameState.get_resource("bandwidth")
+	var inf_per_sec: float = bw * (base_eff + GameState.efficiency_bonus)
+	GameState.set_per_second("influence", inf_per_sec)
+	GameState.add_resource("influence", inf_per_sec * delta)
+
+# === DETECTION RISK ===
+# DR += nodes * dr_gain_per_node * (1 - dr_reduction) per second
+# DR -= (dr_passive_decay + dr_decay_bonus) per second
+# Clamp 0-100
+
+func _update_detection_risk(delta: float) -> void:
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var node_count: int = GameState.get_node_count()
+	var gain_per_node: float = cfg.get("dr_gain_per_node", 0.02)
+	var passive_decay: float = cfg.get("dr_passive_decay", 0.01)
+
+	# DR gain reduced by encryption upgrades
+	var reduction_factor: float = maxf(0.0, 1.0 - GameState.dr_reduction)
+	var dr_gain: float = node_count * gain_per_node * reduction_factor
+
+	# DR decay boosted by stealth upgrades
+	var dr_decay: float = passive_decay + GameState.dr_decay_bonus
+
+	var current_dr: float = GameState.get_resource("detection_risk")
+	var new_dr: float = current_dr + (dr_gain - dr_decay) * delta
+	new_dr = clampf(new_dr, 0.0, 100.0)
+	GameState.set_resource("detection_risk", new_dr)
+
+	# Per-second rate for display
+	var net_rate: float = dr_gain - dr_decay
+	GameState.set_per_second("detection_risk", net_rate)
+
+# === THRESHOLD CHECKS ===
+
+func _check_dr_thresholds() -> void:
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var dr: float = GameState.get_resource("detection_risk")
+	var danger: float = cfg.get("dr_danger_threshold", 85.0)
+	var reset_at: float = cfg.get("dr_soft_reset_threshold", 100.0)
+
+	if dr >= reset_at:
+		soft_reset_triggered.emit()
+		GameState.soft_reset_current_tier()
+		return
+
+	if dr >= 50.0:
+		risk_warning.emit(dr)
+
+func _check_unlock_conditions() -> void:
+	if GameState.check_unlock_condition():
+		var cfg := GameConfig.get_tier_config(GameState.tier)
+		var reward: String = cfg.get("unlock_reward", "")
+		if reward != "" and not GameState.has_unlock(reward):
+			GameState.achieve_unlock(reward)
+
+# === DISPLAY HELPERS ===
 
 func get_bandwidth_display() -> String:
-	return "%.1f" % bandwidth
+	return "%.1f" % GameState.get_resource("bandwidth")
 
 func get_influence_display() -> String:
-	return "%.1f" % influence
-
-func get_detection_risk_display() -> String:
-	return "%.1f%%" % detection_risk
-
-func get_encryption_display() -> String:
-	return "Lv. %d" % int(encryption_level)
+	return "%.1f" % GameState.get_resource("influence")
 
 func get_influence_rate() -> float:
-	return bandwidth * (efficiency_multiplier + map_inf_bonus) + type_total_inf
+	return GameState.get_per_second("influence")
+
+func get_detection_risk_display() -> String:
+	return "%.1f%%" % GameState.get_resource("detection_risk")
+
+func get_dr_rate_display() -> String:
+	var rate: float = GameState.get_per_second("detection_risk")
+	if rate >= 0.0:
+		return "+%.2f/s" % rate
+	return "%.2f/s" % rate
+
+func get_node_count() -> int:
+	return GameState.get_node_count()
+
+func get_max_nodes() -> int:
+	return GameState.get_max_nodes()
