@@ -86,7 +86,7 @@ func _check_dr_thresholds() -> void:
 
 	if dr >= reset_at:
 		soft_reset_triggered.emit()
-		GameState.soft_reset_tier0()
+		GameState.soft_reset_current_tier()
 		return
 
 	if dr >= 50.0:

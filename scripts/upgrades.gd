@@ -16,13 +16,13 @@ func get_upgrade_level(upgrade_id: String) -> int:
 
 func get_upgrades_for_category(category: String) -> Array:
 	var result: Array = []
-	for def: Dictionary in GameConfig.TIER0_UPGRADES:
+	for def: Dictionary in GameConfig.get_upgrades_for_tier(GameState.tier):
 		if def.get("category", "") == category:
 			result.append(def)
 	return result
 
 func get_upgrade_def(upgrade_id: String) -> Dictionary:
-	for def: Dictionary in GameConfig.TIER0_UPGRADES:
+	for def: Dictionary in GameConfig.get_upgrades_for_tier(GameState.tier):
 		if def["id"] == upgrade_id:
 			return def
 	return {}

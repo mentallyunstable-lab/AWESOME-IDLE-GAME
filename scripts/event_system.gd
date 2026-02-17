@@ -79,7 +79,7 @@ func _spawn_random_event() -> void:
 	for entry: Dictionary in _active_events:
 		active_ids.append(entry["def"]["id"])
 
-	for evt: Dictionary in GameConfig.TIER0_EVENTS:
+	for evt: Dictionary in GameConfig.get_events_for_tier(GameState.tier):
 		if not active_ids.has(evt["id"]):
 			available.append(evt)
 

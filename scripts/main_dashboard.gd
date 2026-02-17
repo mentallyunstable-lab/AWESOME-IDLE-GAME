@@ -144,11 +144,14 @@ func _update_display() -> void:
 	detection_rate.text = Resources.get_dr_rate_display()
 	dr_bar.value = dr
 
-	# DR color coding
-	if dr >= 85.0:
+	# DR color coding — thresholds from tier config
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var dr_danger: float = cfg.get("dr_danger_threshold", 85.0)
+	var dr_warn: float = dr_danger * 0.6  # warning at ~60% of danger
+	if dr >= dr_danger:
 		detection_value.add_theme_color_override("font_color", GameConfig.COLOR_RED)
 		detection_rate.add_theme_color_override("font_color", GameConfig.COLOR_RED)
-	elif dr >= 50.0:
+	elif dr >= dr_warn:
 		detection_value.add_theme_color_override("font_color", GameConfig.COLOR_ORANGE)
 		detection_rate.add_theme_color_override("font_color", GameConfig.COLOR_ORANGE)
 	else:
@@ -206,22 +209,26 @@ func _rebuild_node_grid() -> void:
 func _update_objectives() -> void:
 	var inf: float = GameState.get_resource("influence")
 	var dr: float = GameState.get_resource("detection_risk")
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var condition: Dictionary = cfg.get("unlock_condition", {})
+	var inf_target: float = condition.get("influence_min", 500.0)
+	var dr_target: float = condition.get("detection_risk_below", 70.0)
 
-	var inf_met: bool = inf >= 500.0
-	var dr_met: bool = dr < 70.0
+	var inf_met: bool = inf >= inf_target
+	var dr_met: bool = dr < dr_target
 
 	if inf_met:
-		objective_influence.text = "[x] Reach 500 Influence"
+		objective_influence.text = "[x] Reach %.0f Influence" % inf_target
 		objective_influence.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
 	else:
-		objective_influence.text = "[ ] Reach 500 Influence (%.0f / 500)" % inf
+		objective_influence.text = "[ ] Reach %.0f Influence (%.0f / %.0f)" % [inf_target, inf, inf_target]
 		objective_influence.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
 
 	if dr_met:
-		objective_dr.text = "[x] Detection Risk < 70%%"
+		objective_dr.text = "[x] Detection Risk < %.0f%%" % dr_target
 		objective_dr.add_theme_color_override("font_color", GameConfig.COLOR_CYAN)
 	else:
-		objective_dr.text = "[ ] Detection Risk < 70%% (%.1f%%)" % dr
+		objective_dr.text = "[ ] Detection Risk < %.0f%% (%.1f%%)" % [dr_target, dr]
 		objective_dr.add_theme_color_override("font_color", Color(0.55, 0.6, 0.65, 1))
 
 # === EVENT DISPLAY ===
@@ -300,16 +307,23 @@ func _on_risk_warning(level: float) -> void:
 		risk_is_critical = true
 		risk_pulse_timer.start()
 
-	if level >= 85.0:
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var dr_danger: float = cfg.get("dr_danger_threshold", 85.0)
+	var condition: Dictionary = cfg.get("unlock_condition", {})
+	var dr_target: float = condition.get("detection_risk_below", 70.0)
+
+	if level >= dr_danger:
 		risk_warning.text = "!! CRITICAL EXPOSURE — DETECTION IMMINENT !!"
-	elif level >= 70.0:
+	elif level >= dr_target:
 		risk_warning.text = "!! HIGH RISK — Reduce nodes or invest in Encryption !!"
 	else:
 		risk_warning.text = "! WARNING — Detection Risk Elevated !"
 
 func _on_risk_pulse() -> void:
 	var dr: float = GameState.get_resource("detection_risk")
-	if dr < 50.0:
+	var cfg := GameConfig.get_tier_config(GameState.tier)
+	var dr_warn: float = cfg.get("dr_danger_threshold", 85.0) * 0.6
+	if dr < dr_warn:
 		risk_is_critical = false
 		risk_pulse_timer.stop()
 		risk_warning.text = ""

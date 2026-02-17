@@ -76,7 +76,7 @@ func _init_tier(t: int) -> void:
 			}
 
 	# Init upgrade levels
-	for upgrade_def: Dictionary in GameConfig.TIER0_UPGRADES:
+	for upgrade_def: Dictionary in GameConfig.get_upgrades_for_tier(t):
 		var uid: String = upgrade_def["id"]
 		if not upgrade_levels.has(uid):
 			upgrade_levels[uid] = 0
@@ -198,7 +198,7 @@ func _recalculate_modifiers() -> void:
 	dr_decay_bonus = 0.0
 	max_nodes_bonus = 0
 
-	for upgrade_def: Dictionary in GameConfig.TIER0_UPGRADES:
+	for upgrade_def: Dictionary in GameConfig.get_upgrades_for_tier(tier):
 		var uid: String = upgrade_def["id"]
 		var level: int = get_upgrade_level(uid)
 		if level <= 0:
@@ -221,7 +221,7 @@ func _recalculate_modifiers() -> void:
 				max_nodes_bonus += int(effect)
 
 func _find_upgrade_def(upgrade_id: String) -> Dictionary:
-	for upgrade_def: Dictionary in GameConfig.TIER0_UPGRADES:
+	for upgrade_def: Dictionary in GameConfig.get_upgrades_for_tier(tier):
 		if upgrade_def["id"] == upgrade_id:
 			return upgrade_def
 	return {}
@@ -247,9 +247,9 @@ func achieve_unlock(unlock_id: String) -> void:
 func has_unlock(unlock_id: String) -> bool:
 	return progression["unlocks"].has(unlock_id)
 
-# === SOFT RESET (Tier 0 DR = 100) ===
+# === SOFT RESET (DR hit threshold) ===
 
-func soft_reset_tier0() -> void:
+func soft_reset_current_tier() -> void:
 	# Reset resources but keep upgrades and unlocks
 	set_resource("bandwidth", 0.0)
 	set_resource("influence", get_resource("influence") * 0.5)  # Lose half influence

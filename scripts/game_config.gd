@@ -14,7 +14,7 @@ const TIER_DEFS: Dictionary = {
 		"resources": ["bandwidth", "influence", "detection_risk"],
 		"max_nodes": 20,
 		"node_base_bw": 1.0,
-		"base_efficiency": 0.05,
+		"base_efficiency": 0.06,
 		"node_bw_cost": 2.0,
 		"node_upgrade_cost_mult": 1.5,
 		"events_enabled": true,
@@ -49,7 +49,7 @@ const RESOURCE_DEFAULTS: Dictionary = {
 const NODE_UPGRADE_MAX_LEVEL: int = 5
 const NODE_UPGRADE_BW_BONUS: float = 0.3  # +30% BW per upgrade level
 const NODE_UPGRADE_BASE_COST: float = 15.0  # Influence cost for first upgrade
-const NODE_UPGRADE_COST_SCALING: float = 1.8
+const NODE_UPGRADE_COST_SCALING: float = 1.5
 
 # === UPGRADE CATEGORIES (TIER 0) ===
 # Router = bandwidth generation + max node soft cap
@@ -71,11 +71,12 @@ const UPGRADE_CATEGORIES: Dictionary = {
 	},
 }
 
-# === UPGRADE DEFINITIONS (TIER 0) ===
-# Each upgrade: id, name, category, base_cost, cost_scaling, multiplier,
-#               max_level, description, effect_type, unlock_influence
+# === UPGRADE DEFINITIONS ===
+# Indexed by tier. Each upgrade: id, name, category, base_cost, cost_scaling,
+# multiplier, max_level, description, effect_type, unlock_influence.
+# Core logic uses get_upgrades_for_tier() — never references TIER0 directly.
 
-const TIER0_UPGRADES: Array = [
+const UPGRADES_BY_TIER: Dictionary = {0: [
 	# --- Router Upgrades ---
 	{
 		"id": "router_boost",
@@ -160,19 +161,19 @@ const TIER0_UPGRADES: Array = [
 		"max_level": 4,
 		"description": "Advanced traffic obfuscation.\n-8% DR gain per level.",
 		"effect_type": "dr_reduction",
-		"unlock_influence": 120.0,
+		"unlock_influence": 80.0,
 	},
 	{
 		"id": "stealth_protocol",
 		"name": "Stealth Protocol",
 		"category": "encryption",
-		"base_cost": 600.0,
-		"cost_scaling": 1.8,
-		"multiplier": 0.05,
+		"base_cost": 500.0,
+		"cost_scaling": 1.7,
+		"multiplier": 0.008,
 		"max_level": 3,
-		"description": "Increases passive DR decay rate.\n+0.005 decay/s per level.",
+		"description": "Increases passive DR decay rate.\n+0.008 decay/s per level.",
 		"effect_type": "dr_decay_bonus",
-		"unlock_influence": 250.0,
+		"unlock_influence": 200.0,
 	},
 	# --- Hardware Upgrades ---
 	{
@@ -209,7 +210,7 @@ const TIER0_UPGRADES: Array = [
 		"max_level": 3,
 		"description": "High-speed data processing.\n+0.04 efficiency per level.",
 		"effect_type": "efficiency_bonus",
-		"unlock_influence": 150.0,
+		"unlock_influence": 100.0,
 	},
 	{
 		"id": "gpu_compute",
@@ -221,13 +222,14 @@ const TIER0_UPGRADES: Array = [
 		"max_level": 3,
 		"description": "Massive influence processing power.\n+0.05 efficiency per level.",
 		"effect_type": "efficiency_bonus",
-		"unlock_influence": 300.0,
+		"unlock_influence": 200.0,
 	},
-]
+]}
 
-# === EVENT DEFINITIONS (TIER 0) ===
+# === EVENT DEFINITIONS ===
+# Indexed by tier. Core logic uses get_events_for_tier().
 
-const TIER0_EVENTS: Array = [
+const EVENTS_BY_TIER: Dictionary = {0: [
 	{
 		"id": "isp_throttle",
 		"name": "ISP Throttle",
@@ -272,7 +274,7 @@ const TIER0_EVENTS: Array = [
 		"icon": "warning",
 		"severity": "warning",
 	},
-]
+]}
 
 # === UNLOCK DEFINITIONS ===
 
@@ -304,6 +306,12 @@ static func get_tier_config(tier: int) -> Dictionary:
 static func get_tier_name(tier: int) -> String:
 	var cfg := get_tier_config(tier)
 	return cfg.get("name", "Unknown")
+
+static func get_upgrades_for_tier(tier: int) -> Array:
+	return UPGRADES_BY_TIER.get(tier, [])
+
+static func get_events_for_tier(tier: int) -> Array:
+	return EVENTS_BY_TIER.get(tier, [])
 
 static func get_upgrade_cost(base_cost: float, cost_scaling: float, level: int) -> float:
 	return base_cost * pow(cost_scaling, level)
