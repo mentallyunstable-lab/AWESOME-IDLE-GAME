@@ -218,6 +218,31 @@ const UPGRADES_BY_TIER: Dictionary = {
 		"effect_type": "dr_decay_bonus",
 		"unlock_influence": 200.0,
 	},
+	# --- Event Resistance Upgrades (TASK 10) ---
+	{
+		"id": "event_dampener",
+		"name": "Event Dampener",
+		"category": "encryption",
+		"base_cost": 150.0,
+		"cost_scaling": 1.5,
+		"multiplier": 0.10,
+		"max_level": 3,
+		"description": "Reduces event duration.\n-10% event duration per level.",
+		"effect_type": "event_duration_reduction",
+		"unlock_influence": 100.0,
+	},
+	{
+		"id": "event_shield",
+		"name": "Event Shield",
+		"category": "encryption",
+		"base_cost": 300.0,
+		"cost_scaling": 1.6,
+		"multiplier": 0.08,
+		"max_level": 3,
+		"description": "Reduces event severity.\n-8% event severity per level.",
+		"effect_type": "event_severity_reduction",
+		"unlock_influence": 150.0,
+	},
 	# --- Hardware Upgrades ---
 	{
 		"id": "cpu_overclock",
@@ -405,9 +430,10 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "isp_throttle",
 		"name": "ISP Throttle",
 		"description": "Your ISP detected unusual traffic. Bandwidth reduced.",
+		"category": "network",
 		"duration": 20.0,
 		"modifier_type": "bw_multiplier",
-		"modifier_value": 0.5,  # 50% BW
+		"modifier_value": 0.5,
 		"dr_spike": 0.0,
 		"icon": "throttle",
 		"severity": "warning",
@@ -416,9 +442,10 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "power_flicker",
 		"name": "Power Flicker",
 		"description": "Power fluctuation! Nodes temporarily disabled.",
+		"category": "power",
 		"duration": 10.0,
 		"modifier_type": "nodes_disabled",
-		"modifier_value": 1.0,  # All nodes disabled
+		"modifier_value": 1.0,
 		"dr_spike": 0.0,
 		"icon": "power",
 		"severity": "danger",
@@ -427,9 +454,10 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "router_crash",
 		"name": "Router Crash",
 		"description": "Router firmware crash. Manual repair required.",
-		"duration": -1.0,  # -1 = requires manual dismiss
+		"category": "hardware",
+		"duration": -1.0,
 		"modifier_type": "bw_multiplier",
-		"modifier_value": 0.0,  # Zero BW
+		"modifier_value": 0.0,
 		"dr_spike": 0.0,
 		"icon": "crash",
 		"severity": "critical",
@@ -438,10 +466,11 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "suspicious_traffic",
 		"name": "Suspicious Traffic Warning",
 		"description": "Network probe detected. Detection risk spiking.",
+		"category": "security",
 		"duration": 15.0,
 		"modifier_type": "dr_spike",
 		"modifier_value": 0.0,
-		"dr_spike": 15.0,  # Immediate DR increase
+		"dr_spike": 15.0,
 		"icon": "warning",
 		"severity": "warning",
 	},
@@ -451,6 +480,7 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "grid_overload",
 		"name": "Grid Overload",
 		"description": "Power grid instability! Energy generation halved.",
+		"category": "power",
 		"duration": 25.0,
 		"modifier_type": "energy_gen_multiplier",
 		"modifier_value": 0.5,
@@ -462,6 +492,7 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "city_inspection",
 		"name": "City Inspection",
 		"description": "Authorities scanning the network...",
+		"category": "security",
 		"duration": 30.0,
 		"modifier_type": "city_inspection",
 		"modifier_value": 1.0,
@@ -475,6 +506,7 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "power_surge",
 		"name": "Power Surge",
 		"description": "Electrical surge! Nodes temporarily offline.",
+		"category": "power",
 		"duration": 12.0,
 		"modifier_type": "nodes_disabled",
 		"modifier_value": 1.0,
@@ -486,6 +518,7 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "traffic_analysis",
 		"name": "Traffic Analysis Alert",
 		"description": "Deep packet inspection detected. DR climbing.",
+		"category": "security",
 		"duration": 20.0,
 		"modifier_type": "dr_spike",
 		"modifier_value": 0.0,
@@ -497,6 +530,7 @@ const EVENTS_BY_TIER: Dictionary = {
 		"id": "district_shutdown",
 		"name": "District Lockdown",
 		"description": "A district is locked down by authorities.",
+		"category": "security",
 		"duration": -1.0,
 		"modifier_type": "district_shutdown",
 		"modifier_value": 1.0,
@@ -523,6 +557,184 @@ const UNLOCKS: Dictionary = {
 	},
 }
 
+# === GLOBAL EFFICIENCY CURVE (TASK 1) ===
+const EFFICIENCY_SOFTCAP: float = 12.0
+const EFFICIENCY_EXPONENT: float = 1.25
+
+# === DISTRICT LOAD (TASK 2) ===
+const DISTRICT_OVERLOAD_THRESHOLD: float = 0.8
+const DISTRICT_DR_MULTIPLIER: float = 1.15
+const DISTRICT_ENERGY_MULTIPLIER: float = 1.20
+
+# === MAINTENANCE DRAIN (TASK 3) ===
+const MAINTENANCE_PER_NODE: float = 0.02
+const MAINTENANCE_DR_SPIKE_RATE: float = 0.5
+
+# === NODE DEGRADATION (TASK 4) ===
+const DEGRADATION_CHANCE_PER_MINUTE: float = 0.002
+const DEGRADATION_OUTPUT_PENALTY: float = 0.5
+const DEGRADATION_DR_MODIFIER: float = 0.005
+const DEGRADATION_REPAIR_COST: float = 10.0
+
+# === DR TIERED STATE (TASK 5) ===
+const DR_STEALTH_THRESHOLD: float = 30.0
+const DR_VOLATILE_THRESHOLD: float = 60.0
+const DR_CRISIS_THRESHOLD: float = 80.0
+const DR_STEALTH_EFFICIENCY_BONUS: float = 0.1
+const DR_VOLATILE_EVENT_FREQ_MULT: float = 1.5
+const DR_CRISIS_SCAN_CHANCE_MULT: float = 2.0
+
+# === SILENT MODE (TASK 6) ===
+const SILENT_MODE_INFLUENCE_MULT: float = 0.5
+const SILENT_MODE_DR_GAIN_MULT: float = 0.4
+const SILENT_MODE_ENERGY_MULT: float = 0.8
+
+# === DR MOMENTUM (TASK 7) ===
+const DR_MOMENTUM_WINDOW: float = 20.0
+const DR_MOMENTUM_RISE_MULT: float = 1.3
+const DR_MOMENTUM_FALL_DECAY_BONUS: float = 0.005
+const DR_MOMENTUM_MAX_BONUS: float = 2.0
+
+# === EVENT ESCALATION (TASK 9) ===
+const EVENT_ESCALATION_COUNT: int = 3
+const EVENT_ESCALATION_WINDOW: float = 300.0  # 5 minutes
+const EVENT_ESCALATION_DURATION_MULT: float = 1.5
+const EVENT_ESCALATION_SEVERITY_MULT: float = 1.3
+
+# === DOCTRINES (TASK 11) ===
+const DOCTRINES: Dictionary = {
+	"stealth": {
+		"name": "Stealth Doctrine",
+		"description": "Minimize detection. Reduced output.",
+		"influence_multiplier": 0.75,
+		"dr_multiplier": 0.6,
+		"energy_multiplier": 0.9,
+		"switch_cost": 100.0,
+	},
+	"throughput": {
+		"name": "Throughput Doctrine",
+		"description": "Maximum output. Higher risk.",
+		"influence_multiplier": 1.3,
+		"dr_multiplier": 1.4,
+		"energy_multiplier": 1.2,
+		"switch_cost": 100.0,
+	},
+	"stability": {
+		"name": "Stability Doctrine",
+		"description": "Balanced approach. Steady growth.",
+		"influence_multiplier": 1.0,
+		"dr_multiplier": 1.0,
+		"energy_multiplier": 1.0,
+		"switch_cost": 50.0,
+	},
+}
+
+# === DISTRICT SPECIALIZATIONS (TASK 12) ===
+const DISTRICT_SPECIALIZATIONS: Dictionary = {
+	"none": {
+		"name": "None",
+		"description": "No specialization.",
+		"output_modifier": 1.0,
+		"dr_modifier": 1.0,
+		"energy_modifier": 1.0,
+	},
+	"mining": {
+		"name": "Data Mining",
+		"description": "Higher output, higher risk.",
+		"output_modifier": 1.3,
+		"dr_modifier": 1.2,
+		"energy_modifier": 1.1,
+	},
+	"stealth": {
+		"name": "Stealth Ops",
+		"description": "Lower risk, lower output.",
+		"output_modifier": 0.8,
+		"dr_modifier": 0.7,
+		"energy_modifier": 0.9,
+	},
+	"relay": {
+		"name": "Relay Hub",
+		"description": "Energy efficient, moderate output.",
+		"output_modifier": 1.1,
+		"dr_modifier": 1.0,
+		"energy_modifier": 0.75,
+	},
+}
+
+# === EFFICIENCY FLOOR CAP (Phase 2 TASK 5) ===
+const MIN_GLOBAL_EFFICIENCY: float = 0.15
+
+# === MOMENTUM CAP (Phase 2 TASK 6) ===
+const MAX_MOMENTUM_MULTIPLIER: float = 1.35
+
+# === EVENT ESCALATION CAP (Phase 2 TASK 7) ===
+const MAX_EVENT_ESCALATION_LEVEL: int = 3
+
+# === CONSTRAINT PRIORITIES (Phase 2 TASK 2) ===
+# Lower number = higher priority = updated first
+const CONSTRAINT_PRIORITIES: Dictionary = {
+	"detection_risk": 10,
+	"energy": 20,
+	"thermal_load": 30,
+	"cognitive_load": 40,
+}
+
+# === COLLAPSE TYPES (Phase 2 TASK 3) ===
+const COLLAPSE_TYPES: Dictionary = {
+	"dr_overflow": {
+		"description": "Detection risk exceeded maximum threshold.",
+		"influence_penalty": 0.5,
+		"clear_nodes": true,
+		"clear_events": true,
+	},
+	"energy_failure": {
+		"description": "Total energy failure — grid collapse.",
+		"influence_penalty": 0.25,
+		"clear_nodes": false,
+		"clear_events": true,
+	},
+	"thermal_overload": {
+		"description": "Thermal runaway — emergency shutdown.",
+		"influence_penalty": 0.5,
+		"clear_nodes": true,
+		"clear_events": true,
+	},
+}
+
+# === EQUILIBRIUM DETECTION (Phase 2 TASK 11) ===
+const EQUILIBRIUM_WINDOW: float = 120.0  # seconds of stable values
+const EQUILIBRIUM_DR_TOLERANCE: float = 2.0  # DR fluctuation tolerance
+const EQUILIBRIUM_INF_RATE_TOLERANCE: float = 0.5  # inf/s fluctuation tolerance
+
+# === STABILITY LOGGER (Phase 2 TASK 10) ===
+const STABILITY_LOG_INTERVAL: float = 300.0  # 5 simulated minutes
+
+# === BALANCE SNAPSHOT (Phase 2 TASK 18) ===
+# Hotkey: F12 — saves current state snapshot for regression testing
+
+# === SAVE VERSION (Phase 2 TASK 8) ===
+const SAVE_VERSION: int = 3
+
+# === SAVE SCHEMA (Phase 2 TASK 8) ===
+# Required top-level keys and their expected types for save validation
+const SAVE_SCHEMA: Dictionary = {
+	"save_version": TYPE_INT,
+	"tier": TYPE_INT,
+	"resources": TYPE_DICTIONARY,
+	"nodes": TYPE_ARRAY,
+	"upgrade_levels": TYPE_DICTIONARY,
+	"prestige": TYPE_DICTIONARY,
+	"progression": TYPE_DICTIONARY,
+	"active_doctrine": TYPE_STRING,
+	"district_specializations": TYPE_DICTIONARY,
+	"silent_mode": TYPE_BOOL,
+	"event_history": TYPE_ARRAY,
+	"game_clock": TYPE_FLOAT,
+	"regions": TYPE_ARRAY,
+	"automation": TYPE_DICTIONARY,
+	"tier_locked": TYPE_DICTIONARY,
+}
+
 # === UI COLORS ===
 
 const COLOR_CYAN := Color(0.0, 1.0, 0.835, 1.0)
@@ -536,23 +748,23 @@ const COLOR_BG_DARK := Color(0.055, 0.067, 0.086, 1.0)
 
 # === HELPER FUNCTIONS ===
 
-static func get_tier_config(tier: int) -> Dictionary:
+func get_tier_config(tier: int) -> Dictionary:
 	if TIER_DEFS.has(tier):
 		return TIER_DEFS[tier]
 	return {}
 
-static func get_tier_name(tier: int) -> String:
+func get_tier_name(tier: int) -> String:
 	var cfg := get_tier_config(tier)
 	return cfg.get("name", "Unknown")
 
-static func get_upgrades_for_tier(tier: int) -> Array:
+func get_upgrades_for_tier(tier: int) -> Array:
 	return UPGRADES_BY_TIER.get(tier, [])
 
-static func get_events_for_tier(tier: int) -> Array:
+func get_events_for_tier(tier: int) -> Array:
 	return EVENTS_BY_TIER.get(tier, [])
 
-static func get_upgrade_cost(base_cost: float, cost_scaling: float, level: int) -> float:
+func get_upgrade_cost(base_cost: float, cost_scaling: float, level: int) -> float:
 	return base_cost * pow(cost_scaling, level)
 
-static func get_node_upgrade_cost(level: int) -> float:
+func get_node_upgrade_cost(level: int) -> float:
 	return NODE_UPGRADE_BASE_COST * pow(NODE_UPGRADE_COST_SCALING, level)
