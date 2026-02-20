@@ -61,6 +61,16 @@ func _on_tick(delta: float) -> void:
 	# Equilibrium detection (Phase 2 TASK 11)
 	GameState.update_equilibrium(delta)
 
+	# Doctrine evolution tick (Phase 5 #16)
+	GameState.tick_doctrine_evolution(delta)
+
+	# Singularity tick (Phase 8 #25)
+	if GameState.singularity_active:
+		GameState.singularity_tick(delta)
+
+	# Hard limit safety net (Phase 6 #21) — last in tick, auto-corrects bad values
+	GameState.enforce_hard_limits()
+
 	# Stability logger during stress test (Phase 2 TASK 10)
 	if _stress_test_active:
 		GameState.update_stability_logger(delta)
@@ -121,14 +131,41 @@ func _update_influence(delta: float) -> void:
 	var eff_mods := GameState.get_modifiers_for_effect("efficiency")
 	var total_eff: float = GameState.pipeline_apply(base_eff, eff_mods)
 
+	# Apply mutation doctrine modifiers
+	var mutation_mods := GameState.get_mutation_modifiers("efficiency")
+	if not mutation_mods.is_empty():
+		total_eff = GameState.pipeline_apply(total_eff, mutation_mods)
+
 	# Global efficiency curve (TASK 1)
 	var global_eff: float = GameState.calculate_global_efficiency()
+
+	# === THERMAL EFFICIENCY PENALTY (Phase 2 #7) ===
+	var thermal_penalty: float = GameState.get_thermal_efficiency_penalty()
+	total_eff *= maxf(0.0, 1.0 - thermal_penalty)
+
+	# === CONSTRAINT INTERACTION: thermal -> bandwidth degradation ===
+	var thermal_bw_interaction: float = GameConfig.CONSTRAINT_INTERACTIONS.get("thermal_load", {}).get("bandwidth", 0.0)
+	if thermal_bw_interaction > 0.0:
+		var thermal_norm: float = GameState.get_thermal_load() / 100.0
+		bw *= maxf(0.0, 1.0 - thermal_norm * thermal_bw_interaction)
+
+	# Research budget amplifies efficiency (Phase 5 #18)
+	total_eff *= GameState.get_research_budget_multiplier()
+
+	# Automation overhead penalty (Phase 2 #8)
+	if has_node("/root/AutomationSystem"):
+		var overhead: float = get_node("/root/AutomationSystem").get_automation_overhead()
+		total_eff *= maxf(0.0, 1.0 - overhead)
 
 	var inf_per_sec: float = bw * total_eff * global_eff
 	inf_per_sec = maxf(inf_per_sec, 0.0)
 
-	# Maintenance drain (TASK 3)
+	# Maintenance drain (TASK 3) — reduced by maintenance budget allocation
 	var maintenance: float = GameState.calculate_maintenance_drain()
+	maintenance *= GameConfig.ADAPTIVE_MAINTENANCE_RANGE[0]  # Base scaling
+	if has_node("/root/AdaptiveDifficulty"):
+		maintenance *= get_node("/root/AdaptiveDifficulty").maintenance_cost_scalar
+	maintenance *= maxf(0.0, 1.0 - GameState.get_maintenance_budget_reduction())
 	inf_per_sec -= maintenance
 
 	# If influence rate goes negative, trigger DR spike (TASK 3)
@@ -171,12 +208,37 @@ func _update_detection_risk(delta: float) -> void:
 	var total_reduction: float = GameState.pipeline_apply(0.0, dr_red_mods)
 	var reduction_factor: float = maxf(0.0, 1.0 - total_reduction)
 
+	# Stabilization budget reduction (Phase 5 #18)
+	reduction_factor *= maxf(0.0, 1.0 - GameState.get_stabilization_dr_bonus())
+
 	var dr_gain: float = base_dr_gain * reduction_factor
+
+	# === DR PHASE TRANSITIONS (Phase 3 #10) — nonlinear band behavior ===
+	if has_node("/root/AdaptiveDifficulty"):
+		dr_gain = get_node("/root/AdaptiveDifficulty").apply_dr_phase_behavior(dr_gain)
 
 	# Apply DR gain modifiers (silent mode, doctrine, momentum via pipeline)
 	var dr_gain_mods := GameState.get_modifiers_for_effect("dr_gain")
 	if dr_gain_mods.size() > 0:
 		dr_gain = GameState.pipeline_apply(dr_gain, dr_gain_mods)
+
+	# Apply mutation doctrine modifiers
+	var mutation_mods := GameState.get_mutation_modifiers("dr_gain")
+	if not mutation_mods.is_empty():
+		dr_gain = GameState.pipeline_apply(dr_gain, mutation_mods)
+
+	# === ADAPTIVE DIFFICULTY DR MULTIPLIER (Phase 1 #1) ===
+	if has_node("/root/AdaptiveDifficulty"):
+		dr_gain *= get_node("/root/AdaptiveDifficulty").dr_gain_multiplier
+
+	# === CONSTRAINT INTERACTION: Thermal -> DR gain (Phase 1 #3) ===
+	var thermal_dr_interaction: float = GameConfig.CONSTRAINT_INTERACTIONS.get("thermal_load", {}).get("dr_gain", 0.0)
+	if thermal_dr_interaction > 0.0:
+		var thermal_norm: float = GameState.get_thermal_load() / 100.0
+		dr_gain += dr_gain * thermal_norm * thermal_dr_interaction
+
+	# Thermal load DR bonus (Phase 2 #7)
+	dr_gain += GameState.get_thermal_dr_bonus() * 0.3 * float(node_count)
 
 	# Degraded nodes add DR (TASK 4)
 	var degraded_count: int = GameState.get_degraded_node_count()
@@ -187,6 +249,10 @@ func _update_detection_risk(delta: float) -> void:
 	# DR decay
 	var decay_mods := GameState.get_modifiers_for_effect("dr_decay")
 	var dr_decay: float = GameState.pipeline_apply(passive_decay, decay_mods)
+
+	# Adaptive difficulty constraint regen rate affects decay
+	if has_node("/root/AdaptiveDifficulty"):
+		dr_decay *= get_node("/root/AdaptiveDifficulty").constraint_regen_rate
 
 	# DR momentum decay bonus (TASK 7)
 	if GameState.dr_momentum_bonus < 0.0:

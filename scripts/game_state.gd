@@ -28,6 +28,11 @@ signal doctrine_changed(doctrine_id: String)
 signal collapse_triggered(collapse_type: String, scope: String)
 signal equilibrium_reached
 signal equilibrium_lost
+signal singularity_phase_changed(active: bool)
+signal influence_budget_rebalanced(allocations: Dictionary)
+signal hard_limit_violated(resource: String, corrected_value: float)
+signal doctrine_mutation_unlocked(mutation_id: String)
+signal tier_lock_changed(tier: int, locked: bool)
 
 # === MODIFIER PIPELINE ===
 
@@ -133,6 +138,44 @@ var regions: Array = []
 
 # === TIER LOCK FLAG (Phase 2 TASK 17) ===
 var tier_locked: Dictionary = {0: true, 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false}
+
+# === THERMAL LOAD (Phase 2 #7 — full implementation) ===
+var _thermal_load: float = 0.0         # 0-100
+var _thermal_rate: float = 0.0         # Change per second
+
+# === INFLUENCE ALLOCATION MODEL (Phase 5 #18) ===
+var influence_budget: Dictionary = {
+	"maintenance":     0.25,
+	"research":        0.25,
+	"automation_fund": 0.25,
+	"stabilization":   0.25,
+}
+
+# === DOCTRINE EVOLUTION (Phase 5 #16) ===
+var unlocked_doctrine_mutations: Array = []    # [ mutation_id, ... ]
+var _doctrine_time_in_current: float = 0.0    # Seconds in active doctrine
+var _doctrine_time_by_id: Dictionary = {}     # { doctrine_id: total_seconds }
+var _collapses_survived: int = 0              # For doctrine mutation conditions
+var _max_thermal_reached: float = 0.0        # Tracks highest thermal seen
+var _equilibrium_time_reached: float = 0.0   # Max continuous equilibrium seconds
+
+# === TIER LOCK ESCALATION (Phase 5 #17) ===
+var _recent_collapses: Array = []             # { time: float } entries
+var _collapse_lock_active: bool = false       # Dynamic collapse-frequency lock
+
+# === HARD LIMIT SAFETY NET (Phase 6 #21) ===
+var _safety_violations_this_tick: int = 0
+
+# === DETERMINISTIC SIMULATION (Phase 6 #19) ===
+var deterministic_mode: bool = false
+var simulation_seed: int = GameConfig.DEFAULT_SIMULATION_SEED
+var _deterministic_rng: RandomNumberGenerator = RandomNumberGenerator.new()
+
+# === SINGULARITY PHASE (Phase 8 #25) ===
+var singularity_active: bool = false
+var singularity_dr_harvested: float = 0.0      # Cumulative DR converted to influence
+var singularity_constraints_merged: bool = false
+var _singularity_inversion_available: bool = false
 
 # === EQUILIBRIUM TRACKING (Phase 2 TASK 11) ===
 var _equilibrium_timer: float = 0.0
@@ -744,16 +787,68 @@ func clear_stability_log() -> void:
 	_stability_log.clear()
 	_stability_log_timer = 0.0
 
-# === THERMAL LOAD STUB (Phase 2 TASK 14) ===
+# === THERMAL LOAD FULL IMPLEMENTATION (Phase 2 #7) ===
 
-func update_thermal_load(_delta: float) -> void:
-	# Stub: thermal_load constraint exists but update is a no-op
-	# Safe to activate — will read 0.0 / write 0.0
-	pass
+func update_thermal_load(delta: float) -> void:
+	var node_count: int = get_node_count()
+	var degraded_count: int = get_degraded_node_count()
+	var maintenance_drain: float = calculate_maintenance_drain()
+
+	# Generation: base per-node heat + degraded node bonus + maintenance stress
+	var thermal_gen: float = float(node_count) * GameConfig.THERMAL_PER_NODE_RATE
+	thermal_gen += float(degraded_count) * GameConfig.THERMAL_PER_NODE_RATE * (GameConfig.THERMAL_DEGRADED_FACTOR - 1.0)
+	thermal_gen += maintenance_drain * GameConfig.THERMAL_MAINTENANCE_FACTOR
+
+	# Active events increase thermal stress
+	for evt: Dictionary in active_events:
+		var severity: String = evt.get("def", {}).get("severity", "")
+		if severity == "critical":
+			thermal_gen += GameConfig.THERMAL_PER_NODE_RATE * 2.0
+		elif severity == "danger":
+			thermal_gen += GameConfig.THERMAL_PER_NODE_RATE * 0.8
+
+	# Dissipation (natural cooling)
+	var dissipation: float = GameConfig.THERMAL_DISSIPATION_BASE
+	# Stealth mode runs cooler
+	if silent_mode:
+		dissipation *= 1.3
+
+	# Apply doctrine modifier if overclocked_grid is active
+	if active_doctrine == "overclocked_grid":
+		var mutation: Dictionary = GameConfig.DOCTRINE_MUTATIONS.get("overclocked_grid", {})
+		thermal_gen *= mutation.get("thermal_multiplier", 1.0)
+
+	_thermal_rate = thermal_gen - dissipation
+	_thermal_load = clampf(_thermal_load + _thermal_rate * delta, 0.0, 100.0)
+
+	# Sync to constraint registry
+	for entry: Dictionary in constraint_registry:
+		if entry["id"] == "thermal_load":
+			entry["value"] = _thermal_load
+			entry["rate"]  = _thermal_rate
+			entry["active"] = true   # Thermal is now always active
+			break
+
+	# Track max thermal for doctrine mutation unlock conditions
+	_max_thermal_reached = maxf(_max_thermal_reached, _thermal_load)
+
+	# Thermal meltdown trigger
+	if _thermal_load >= GameConfig.THERMAL_MELTDOWN_THRESHOLD:
+		trigger_collapse("thermal_meltdown", "current_tier")
 
 func get_thermal_load() -> float:
-	var entry: Dictionary = get_constraint("thermal_load")
-	return entry.get("value", 0.0)
+	return _thermal_load
+
+func get_thermal_rate() -> float:
+	return _thermal_rate
+
+func get_thermal_efficiency_penalty() -> float:
+	# Higher thermal = lower efficiency. Linear from 0 at 0% to max_penalty at 100%
+	return (_thermal_load / 100.0) * GameConfig.THERMAL_EFFICIENCY_PENALTY
+
+func get_thermal_dr_bonus() -> float:
+	# Thermal increases DR gain. Scales from 0 to DR_GAIN_BONUS at 100%.
+	return (_thermal_load / 100.0) * GameConfig.THERMAL_DR_GAIN_BONUS
 
 # === BALANCE SNAPSHOT (Phase 2 TASK 18) ===
 
@@ -1411,6 +1506,396 @@ func get_influence_breakdown() -> Dictionary:
 		"silent_mode": silent_mode,
 		"doctrine": active_doctrine,
 	}
+
+# === HARD LIMIT SAFETY NET (Phase 6 #21) ===
+# Called every tick — asserts all values are in valid ranges.
+# Auto-corrects instead of crashing.
+
+func enforce_hard_limits() -> void:
+	_safety_violations_this_tick = 0
+
+	# Detection Risk
+	var dr: float = get_resource("detection_risk")
+	if is_nan(dr) or is_inf(dr):
+		set_resource("detection_risk", 0.0)
+		hard_limit_violated.emit("detection_risk", 0.0)
+		_safety_violations_this_tick += 1
+	elif dr > GameConfig.SAFETY_MAX_DR:
+		set_resource("detection_risk", GameConfig.SAFETY_MAX_DR)
+		hard_limit_violated.emit("detection_risk", GameConfig.SAFETY_MAX_DR)
+		_safety_violations_this_tick += 1
+	elif dr < 0.0:
+		set_resource("detection_risk", 0.0)
+		_safety_violations_this_tick += 1
+
+	# Influence
+	var inf: float = get_resource("influence")
+	if is_nan(inf) or is_inf(inf):
+		set_resource("influence", 0.0)
+		hard_limit_violated.emit("influence", 0.0)
+		_safety_violations_this_tick += 1
+	elif inf > GameConfig.SAFETY_MAX_INFLUENCE:
+		set_resource("influence", GameConfig.SAFETY_MAX_INFLUENCE)
+		_safety_violations_this_tick += 1
+	elif inf < 0.0:
+		set_resource("influence", 0.0)
+		_safety_violations_this_tick += 1
+
+	# Thermal
+	if is_nan(_thermal_load) or is_inf(_thermal_load):
+		_thermal_load = 0.0
+		hard_limit_violated.emit("thermal_load", 0.0)
+		_safety_violations_this_tick += 1
+	_thermal_load = clampf(_thermal_load, 0.0, GameConfig.SAFETY_MAX_THERMAL)
+
+	# DR Momentum
+	if is_nan(dr_momentum_bonus) or is_inf(dr_momentum_bonus):
+		dr_momentum_bonus = 0.0
+		_safety_violations_this_tick += 1
+	dr_momentum_bonus = clampf(dr_momentum_bonus, -GameConfig.SAFETY_MAX_MOMENTUM, GameConfig.SAFETY_MAX_MOMENTUM)
+
+	# Energy
+	if resources.has("energy"):
+		var energy: float = get_resource("energy")
+		if is_nan(energy) or is_inf(energy):
+			set_resource("energy", 0.0)
+			hard_limit_violated.emit("energy", 0.0)
+			_safety_violations_this_tick += 1
+		elif energy > GameConfig.SAFETY_MAX_ENERGY:
+			set_resource("energy", GameConfig.SAFETY_MAX_ENERGY)
+			_safety_violations_this_tick += 1
+
+	# Constraint registry values
+	for entry: Dictionary in constraint_registry:
+		var val: float = entry.get("value", 0.0)
+		if is_nan(val) or is_inf(val):
+			entry["value"] = 0.0
+			_safety_violations_this_tick += 1
+
+func get_safety_violations_last_tick() -> int:
+	return _safety_violations_this_tick
+
+# === INFLUENCE ALLOCATION MODEL (Phase 5 #18) ===
+
+## Set the fractional allocation for a budget category (must sum to 1.0 total).
+func set_budget_allocation(category: String, weight: float) -> void:
+	if not GameConfig.INFLUENCE_BUDGET_CATEGORIES.has(category):
+		push_warning("[InfluenceAlloc] Unknown category: %s" % category)
+		return
+	var cat_cfg: Dictionary = GameConfig.INFLUENCE_BUDGET_CATEGORIES[category]
+	weight = clampf(weight, cat_cfg.get("min_weight", 0.0), cat_cfg.get("max_weight", 1.0))
+	influence_budget[category] = weight
+	_normalize_budget()
+	influence_budget_rebalanced.emit(influence_budget.duplicate())
+	state_changed.emit()
+
+func _normalize_budget() -> void:
+	var total: float = 0.0
+	for cat: String in influence_budget.keys():
+		total += influence_budget[cat]
+	if total <= 0.0:
+		return
+	for cat: String in influence_budget.keys():
+		influence_budget[cat] /= total
+
+## Returns effective modifier from a budget category (with diminishing returns).
+func get_budget_effect(category: String) -> float:
+	var weight: float = influence_budget.get(category, 0.0)
+	var cat_cfg: Dictionary = GameConfig.INFLUENCE_BUDGET_CATEGORIES.get(category, {})
+	var dr: float = cat_cfg.get("diminishing_returns", 0.5)
+	# Linear up to DR threshold, then steep dropoff
+	if weight <= dr:
+		return weight / dr
+	else:
+		return 1.0 + (weight - dr) * 0.3  # Diminishing returns past cap
+
+## Returns maintenance reduction from the maintenance budget allocation.
+func get_maintenance_budget_reduction() -> float:
+	return clampf(get_budget_effect("maintenance") * 0.4, 0.0, 0.35)
+
+## Returns upgrade effectiveness multiplier from research budget.
+func get_research_budget_multiplier() -> float:
+	return 1.0 + get_budget_effect("research") * 0.25
+
+## Returns stabilization DR-reduction bonus.
+func get_stabilization_dr_bonus() -> float:
+	return get_budget_effect("stabilization") * 0.15
+
+# === DOCTRINE EVOLUTION TREE (Phase 5 #16) ===
+
+func tick_doctrine_evolution(delta: float) -> void:
+	# Track time in current doctrine
+	_doctrine_time_in_current += delta
+	if not _doctrine_time_by_id.has(active_doctrine):
+		_doctrine_time_by_id[active_doctrine] = 0.0
+	_doctrine_time_by_id[active_doctrine] += delta
+
+	# Track equilibrium time
+	if _equilibrium_active:
+		_equilibrium_time_reached = maxf(_equilibrium_time_reached, _equilibrium_timer)
+
+	# Check mutation unlock conditions
+	for mutation_id: String in GameConfig.DOCTRINE_MUTATIONS.keys():
+		if unlocked_doctrine_mutations.has(mutation_id):
+			continue
+		var mutation: Dictionary = GameConfig.DOCTRINE_MUTATIONS[mutation_id]
+		if _check_mutation_unlock(mutation_id, mutation):
+			unlocked_doctrine_mutations.append(mutation_id)
+			doctrine_mutation_unlocked.emit(mutation_id)
+			print("[DoctrineEvolution] Unlocked mutation: %s" % mutation.get("name", mutation_id))
+
+func _check_mutation_unlock(mutation_id: String, mutation: Dictionary) -> bool:
+	var conds: Dictionary = mutation.get("unlock_conditions", {})
+
+	for cond_key: String in conds.keys():
+		var cond_val = conds[cond_key]
+		match cond_key:
+			"stealth_doctrine_time":
+				if _doctrine_time_by_id.get("stealth", 0.0) < float(cond_val):
+					return false
+			"throughput_doctrine_time":
+				if _doctrine_time_by_id.get("throughput", 0.0) < float(cond_val):
+					return false
+			"stability_doctrine_time":
+				if _doctrine_time_by_id.get("stability", 0.0) < float(cond_val):
+					return false
+			"dr_max_during":
+				# Must have maintained DR below threshold during stealth
+				if _thermal_load > float(cond_val) * 2.0:
+					return false
+			"thermal_reached":
+				if _max_thermal_reached < float(cond_val):
+					return false
+			"collapses_survived":
+				if _collapses_survived < int(cond_val):
+					return false
+			"equilibrium_time_reached":
+				if _equilibrium_time_reached < float(cond_val):
+					return false
+
+	return true
+
+func switch_to_mutation(mutation_id: String) -> bool:
+	if not unlocked_doctrine_mutations.has(mutation_id):
+		push_warning("[DoctrineEvolution] Mutation '%s' not yet unlocked." % mutation_id)
+		return false
+	var mutation: Dictionary = GameConfig.DOCTRINE_MUTATIONS.get(mutation_id, {})
+	if mutation.is_empty():
+		return false
+	var cost: float = mutation.get("switch_cost", 200.0)
+	if get_resource("influence") < cost:
+		return false
+	add_resource("influence", -cost)
+	# Store as special doctrine (prefixed)
+	active_doctrine = "mutation:%s" % mutation_id
+	_doctrine_time_in_current = 0.0
+	doctrine_changed.emit(active_doctrine)
+	state_changed.emit()
+	print("[DoctrineEvolution] Switched to mutation: %s" % mutation.get("name", mutation_id))
+	return true
+
+func get_mutation_modifiers(effect_id: String) -> Array:
+	if not active_doctrine.begins_with("mutation:"):
+		return []
+	var mutation_id: String = active_doctrine.substr(9)
+	var mutation: Dictionary = GameConfig.DOCTRINE_MUTATIONS.get(mutation_id, {})
+	if mutation.is_empty():
+		return []
+	var mods: Array = []
+	match effect_id:
+		"efficiency":
+			var mult: float = mutation.get("influence_multiplier", 1.0)
+			if mult != 1.0:
+				mods.append({"type": "mult", "value": mult, "source": "doctrine_mutation"})
+		"dr_gain":
+			var mult: float = mutation.get("dr_multiplier", 1.0)
+			if mult != 1.0:
+				mods.append({"type": "mult", "value": mult, "source": "doctrine_mutation"})
+	return mods
+
+# === TIER LOCK ESCALATION (Phase 5 #17) ===
+
+## Track collapses for dynamic tier lock conditions.
+func _record_collapse_for_lock(collapse_time: float) -> void:
+	_recent_collapses.append({"time": collapse_time})
+	_collapses_survived += 1
+	var window: float = GameConfig.TIER_LOCK_CONDITIONS.get("collapse_frequency_lock", {}).get("collapse_window", 300.0)
+	var cutoff: float = collapse_time - window
+	while _recent_collapses.size() > 0 and _recent_collapses[0]["time"] < cutoff:
+		_recent_collapses.pop_front()
+	_evaluate_tier_lock_escalation()
+
+func _evaluate_tier_lock_escalation() -> void:
+	var max_collapses: int = GameConfig.TIER_LOCK_CONDITIONS.get("collapse_frequency_lock", {}).get("max_collapses", 3)
+	if _recent_collapses.size() >= max_collapses and not _collapse_lock_active:
+		_collapse_lock_active = true
+		tier_locked[tier] = true
+		tier_lock_changed.emit(tier, true)
+		push_warning("[TierLock] Collapse frequency lock activated for tier %d." % tier)
+	elif _recent_collapses.size() < max_collapses and _collapse_lock_active and _equilibrium_active:
+		_collapse_lock_active = false
+		print("[TierLock] Collapse frequency lock cleared — equilibrium achieved.")
+
+func is_tier_escalation_locked() -> bool:
+	return _collapse_lock_active
+
+func get_collapse_frequency() -> int:
+	return _recent_collapses.size()
+
+# === META-COLLAPSE TYPES (Phase 3 #12) ===
+
+## Extended collapse handler for all 8 collapse types (3 original + 5 meta).
+func trigger_meta_collapse(collapse_type: String, scope: String = "current_tier") -> void:
+	# Check original types first
+	var original_types: Array = GameConfig.COLLAPSE_TYPES.keys()
+	if original_types.has(collapse_type):
+		trigger_collapse(collapse_type, scope)
+		_record_collapse_for_lock(_game_clock)
+		return
+
+	# Meta collapse types
+	var meta_def: Dictionary = GameConfig.META_COLLAPSE_TYPES.get(collapse_type, {})
+	if meta_def.is_empty():
+		push_error("[MetaCollapse] Unknown collapse type: %s" % collapse_type)
+		return
+
+	print("[MetaCollapse] === %s === scope: %s" % [collapse_type.to_upper(), scope])
+	print("  %s" % meta_def.get("description", ""))
+
+	# Apply influence penalty
+	var inf_penalty: float = meta_def.get("influence_penalty", 0.5)
+	set_resource("influence", get_resource("influence") * inf_penalty)
+
+	# Clear nodes
+	if meta_def.get("clear_nodes", false):
+		nodes.clear()
+
+	# Clear events
+	if meta_def.get("clear_events", false):
+		active_events.clear()
+		event_bw_multiplier = 1.0
+		event_nodes_disabled = false
+		event_energy_gen_multiplier = 1.0
+		event_district_shutdown = ""
+
+	# Reset thermal
+	if meta_def.get("resets_thermal", false):
+		_thermal_load = 0.0
+		_thermal_rate = 0.0
+
+	# Reset all constraints
+	if meta_def.get("resets_all_constraints", false):
+		set_resource("detection_risk", 0.0)
+		if resources.has("energy"):
+			set_resource("energy", 0.0)
+		_thermal_load = 0.0
+		dr_momentum_history.clear()
+		dr_momentum_bonus = 0.0
+
+	# Reset doctrine
+	if meta_def.get("resets_doctrine", false):
+		active_doctrine = "stability"
+		doctrine_changed.emit(active_doctrine)
+
+	# Adaptive difficulty shift
+	var adapt_shift: float = meta_def.get("adaptive_difficulty_shift", 0.0)
+	if adapt_shift != 0.0 and has_node("/root/AdaptiveDifficulty"):
+		var ad := get_node("/root/AdaptiveDifficulty")
+		ad.player_skill_score = clampf(ad.player_skill_score + adapt_shift, 0.0, 1.0)
+
+	stability_timer = 0.0
+	_record_collapse_for_lock(_game_clock)
+	collapse_triggered.emit(collapse_type, scope)
+	state_changed.emit()
+
+# === SYSTEM SINGULARITY PHASE (Phase 8 #25) ===
+
+func check_singularity_unlock() -> void:
+	if singularity_active or tier < GameConfig.SINGULARITY_TIER:
+		return
+	singularity_active = true
+	singularity_dr_harvested = 0.0
+	singularity_constraints_merged = false
+	singularity_phase_changed.emit(true)
+	print("[Singularity] === SINGULARITY PHASE UNLOCKED ===")
+	print("  DR harvesting, constraint merging, collapse inversion now available.")
+
+func singularity_tick(delta: float) -> void:
+	if not singularity_active:
+		return
+
+	# DR Harvesting: convert excess DR above target into influence
+	var dr: float = get_resource("detection_risk")
+	if dr > GameConfig.SINGULARITY_CONTROLLED_CHAOS_DR:
+		var excess_dr: float = dr - GameConfig.SINGULARITY_CONTROLLED_CHAOS_DR
+		var harvested: float = excess_dr * GameConfig.SINGULARITY_DR_HARVEST_RATE * delta
+		add_resource("influence", harvested)
+		add_resource("detection_risk", -harvested * 0.5)  # Partial DR reduction
+		singularity_dr_harvested += harvested
+
+	# Constraint Merging: when all constraints above threshold
+	if not singularity_constraints_merged:
+		var all_high: bool = true
+		for entry: Dictionary in constraint_registry:
+			if entry.get("active", false):
+				var ratio: float = entry.get("value", 0.0) / maxf(entry.get("max_value", 100.0), 1.0)
+				if ratio < GameConfig.SINGULARITY_MERGE_THRESHOLD:
+					all_high = false
+					break
+		if all_high:
+			singularity_constraints_merged = true
+			print("[Singularity] Constraint merging activated — all constraints coupled.")
+
+	# Collapse Inversion: small chance each tick to invert a pending collapse
+	if randf() < GameConfig.SINGULARITY_INVERSION_BASE_CHANCE * delta:
+		_singularity_inversion_available = true
+
+func attempt_collapse_inversion() -> bool:
+	if not singularity_active or not _singularity_inversion_available:
+		return false
+	# Inversion: instead of collapsing, DR drops dramatically
+	var dr: float = get_resource("detection_risk")
+	set_resource("detection_risk", maxf(dr * 0.25, 0.0))
+	add_resource("influence", dr * 2.0)  # Reward
+	_singularity_inversion_available = false
+	print("[Singularity] COLLAPSE INVERTED — DR converted to influence reward.")
+	return true
+
+func get_singularity_status() -> Dictionary:
+	return {
+		"active":              singularity_active,
+		"dr_harvested":        singularity_dr_harvested,
+		"constraints_merged":  singularity_constraints_merged,
+		"inversion_available": _singularity_inversion_available,
+	}
+
+# === DETERMINISTIC SIMULATION MODE (Phase 6 #19) ===
+
+func enable_deterministic_mode(seed: int = GameConfig.DEFAULT_SIMULATION_SEED) -> void:
+	deterministic_mode = true
+	simulation_seed = seed
+	_deterministic_rng.seed = seed
+	print("[Deterministic] Mode enabled. Seed: %d" % seed)
+
+func disable_deterministic_mode() -> void:
+	deterministic_mode = false
+	print("[Deterministic] Mode disabled.")
+
+## Returns a deterministic float in [0, 1]. Use instead of randf() in sim mode.
+func det_randf() -> float:
+	if deterministic_mode:
+		return _deterministic_rng.randf()
+	return randf()
+
+func det_randf_range(from: float, to: float) -> float:
+	if deterministic_mode:
+		return _deterministic_rng.randf_range(from, to)
+	return randf_range(from, to)
+
+func det_randi_range(from: int, to: int) -> int:
+	if deterministic_mode:
+		return _deterministic_rng.randi_range(from, to)
+	return randi_range(from, to)
 
 # === DEBUG ===
 
