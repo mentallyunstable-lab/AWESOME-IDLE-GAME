@@ -768,3 +768,421 @@ func get_upgrade_cost(base_cost: float, cost_scaling: float, level: int) -> floa
 
 func get_node_upgrade_cost(level: int) -> float:
 	return NODE_UPGRADE_BASE_COST * pow(NODE_UPGRADE_COST_SCALING, level)
+
+# === CONSTRAINT INTERACTION MATRIX (Phase 1 #3) ===
+# Cross-modifiers applied during constraint dispatch, before final calculation.
+# Key: source constraint. Value: { target_effect: modifier_strength }
+const CONSTRAINT_INTERACTIONS: Dictionary = {
+	"thermal_load": {
+		"bandwidth":  0.15,   # High thermal degrades BW output
+		"dr_gain":    0.10,   # High thermal increases DR gain rate
+	},
+	"detection_risk": {
+		"thermal_load": 0.08, # High DR stresses hardware, raises thermal
+	},
+	"energy": {
+		"dr_gain": 0.12,      # Energy deficit increases DR gain (desperate ops)
+	},
+}
+
+# === THERMAL LOAD CONFIG (Phase 2 #7) ===
+const THERMAL_PER_NODE_RATE: float       = 0.08   # thermal/s generated per node
+const THERMAL_MAINTENANCE_FACTOR: float  = 0.40   # extra thermal from maintenance events
+const THERMAL_DEGRADED_FACTOR: float     = 2.50   # degraded nodes generate extra heat
+const THERMAL_DISSIPATION_BASE: float    = 0.60   # natural cooling rate (%/s)
+const THERMAL_EFFICIENCY_PENALTY: float  = 0.35   # max efficiency penalty at 100% thermal
+const THERMAL_DR_GAIN_BONUS: float       = 0.25   # DR gain multiplier at 100% thermal
+const THERMAL_EVENT_SEVERITY_BONUS: float = 0.20  # event severity multiplier per 50% thermal
+const THERMAL_MELTDOWN_THRESHOLD: float  = 95.0   # triggers thermal_meltdown collapse
+
+# === SYSTEM NOISE INJECTION (Phase 3 #11) ===
+const NOISE_BASE_AMPLITUDE: float      = 0.018   # Base micro-fluctuation amplitude
+const NOISE_DR_SCALE_FACTOR: float     = 0.006   # Noise scales linearly with DR/100
+const NOISE_CONSTRAINT_DRIFT: float    = 0.008   # Constraint regen variance (subtle)
+const NOISE_MAX_AMPLITUDE: float       = 0.12    # Hard cap — never causes pure-random collapse
+const NOISE_SPEED: float               = 1.0     # Phase advance rate
+
+# === DR PHASE TRANSITION BANDS (Phase 3 #10) ===
+# Nonlinear behavior shifts at band boundaries.
+# Each band applies a distinct function rather than an if-statement scalar.
+const DR_PHASE_BANDS: Dictionary = {
+	"predictable":  {"min":  0.0, "max": 25.0},
+	"noisy":        {"min": 25.0, "max": 50.0},
+	"coupled":      {"min": 50.0, "max": 75.0},
+	"exponential":  {"min": 75.0, "max": 100.0},
+}
+
+# === ADAPTIVE DIFFICULTY (Phase 1 #1) ===
+const ADAPTIVE_DR_GAIN_RANGE: Array        = [0.55, 1.80]
+const ADAPTIVE_EVENT_FREQ_RANGE: Array     = [0.60, 1.70]
+const ADAPTIVE_MAINTENANCE_RANGE: Array    = [0.60, 1.60]
+const ADAPTIVE_CONSTRAINT_REGEN_RANGE: Array = [0.65, 1.35]
+const ADAPTIVE_SMOOTHING: float            = 0.04   # Low = smooth, imperceptible changes
+const ADAPTIVE_WINDOW: float               = 240.0  # 4-minute performance window
+
+# === EQUILIBRIUM DEEP MODEL (Phase 3 #9) ===
+# True dynamic equilibrium via derivative stability analysis.
+const EQUILIBRIUM_DERIV_WINDOW: float         = 10.0   # Window for derivative calc
+const EQUILIBRIUM_STABLE_DERIV_MAX: float     = 0.08   # Max |dDR/dt| for "stable"
+const EQUILIBRIUM_META_STABLE_DERIV_MAX: float = 0.25  # Max |dDR/dt| for "meta-stable"
+const EQUILIBRIUM_CHAOTIC_THRESHOLD: float    = 0.50   # 2nd derivative threshold for chaos
+
+# === META-COLLAPSE TYPES (Phase 3 #12) ===
+# Extends COLLAPSE_TYPES with multi-layer collapses.
+const META_COLLAPSE_TYPES: Dictionary = {
+	"infrastructure_collapse": {
+		"description": "Critical infrastructure failure — hardware destroyed.",
+		"influence_penalty": 0.40,
+		"clear_nodes": true,
+		"clear_events": true,
+		"resets_thermal": true,
+		"affects_memory": true,
+		"adaptive_difficulty_shift": -0.08,
+	},
+	"social_collapse": {
+		"description": "Network exposure — influence network compromised.",
+		"influence_penalty": 0.65,
+		"clear_nodes": false,
+		"clear_events": false,
+		"resets_doctrine": true,
+		"affects_memory": true,
+		"adaptive_difficulty_shift": -0.05,
+	},
+	"economic_collapse": {
+		"description": "Economic resources drained by counter-operations.",
+		"influence_penalty": 0.88,
+		"clear_nodes": false,
+		"clear_events": true,
+		"affects_memory": true,
+	},
+	"thermal_meltdown": {
+		"description": "Thermal runaway destroyed hardware — emergency shutdown.",
+		"influence_penalty": 0.38,
+		"clear_nodes": true,
+		"clear_events": true,
+		"resets_thermal": true,
+		"affects_memory": true,
+	},
+	"systemic_cascade": {
+		"description": "All constraints exceeded simultaneously — total systemic failure.",
+		"influence_penalty": 0.85,
+		"clear_nodes": true,
+		"clear_events": true,
+		"affects_memory": true,
+		"resets_all_constraints": true,
+		"adaptive_difficulty_shift": -0.15,
+	},
+}
+
+# === EVENT CHAINS (Phase 2 #5) ===
+# Events can trigger follow-up events conditionally.
+# chain_conditions: list of conditions that must be met for chain to trigger.
+const EVENT_CHAINS: Dictionary = {
+	"infrastructure_crisis": {
+		"name": "Infrastructure Crisis",
+		"trigger_events": ["power_surge", "grid_overload"],
+		"trigger_conditions": {"dr_above": 60.0, "thermal_above": 40.0},
+		"stages": [
+			{
+				"id": "chain_infra_1",
+				"name": "Infrastructure Strain",
+				"description": "Cascading failures spreading through infrastructure.",
+				"duration": 35.0,
+				"modifier_type": "bw_multiplier",
+				"modifier_value": 0.55,
+				"dr_spike": 8.0,
+				"severity": "danger",
+				"next_stage_id": "chain_infra_2",
+				"next_stage_chance": 0.65,
+			},
+			{
+				"id": "chain_infra_2",
+				"name": "Grid Cascade Failure",
+				"description": "Full grid cascade — emergency shutdown protocols activated.",
+				"duration": 55.0,
+				"modifier_type": "nodes_disabled",
+				"modifier_value": 1.0,
+				"dr_spike": 18.0,
+				"severity": "critical",
+				"next_stage_id": "",
+				"next_stage_chance": 0.0,
+				"triggers_collapse": "infrastructure_collapse",
+				"collapse_chance": 0.25,
+			},
+		],
+	},
+	"security_escalation": {
+		"name": "Security Escalation",
+		"trigger_events": ["suspicious_traffic", "city_inspection"],
+		"trigger_conditions": {"dr_above": 70.0},
+		"stages": [
+			{
+				"id": "chain_sec_1",
+				"name": "Active Surveillance",
+				"description": "Authorities have escalated to active surveillance mode.",
+				"duration": 45.0,
+				"modifier_type": "bw_multiplier",
+				"modifier_value": 0.7,
+				"dr_spike": 12.0,
+				"severity": "danger",
+				"next_stage_id": "chain_sec_2",
+				"next_stage_chance": 0.55,
+			},
+			{
+				"id": "chain_sec_2",
+				"name": "Lockdown Protocol",
+				"description": "Full lockdown — network integrity at risk.",
+				"duration": -1.0,
+				"modifier_type": "nodes_disabled",
+				"modifier_value": 1.0,
+				"dr_spike": 25.0,
+				"severity": "critical",
+				"next_stage_id": "",
+				"next_stage_chance": 0.0,
+			},
+		],
+	},
+}
+
+# === AUTOMATION AGENTS (Phase 2 #8) ===
+const AUTOMATION_AGENTS: Dictionary = {
+	"constraint_monitor": {
+		"name": "Constraint Monitor",
+		"description": "Watches constraint levels and warns before thresholds.",
+		"priority": 1.0,
+		"efficiency_cost": 0.04,    # Influence/s overhead
+		"misallocation_chance": 0.06,
+		"dr_threshold_warn": 65.0,
+		"thermal_threshold_warn": 55.0,
+	},
+	"repair_agent": {
+		"name": "Repair Agent",
+		"description": "Auto-repairs degraded nodes when influence is available.",
+		"priority": 0.90,
+		"efficiency_cost": 0.06,
+		"misallocation_chance": 0.05,
+		"repair_interval": 15.0,    # Seconds between repair attempts
+	},
+	"influence_allocator": {
+		"name": "Influence Allocator",
+		"description": "Dynamically distributes influence across budget categories.",
+		"priority": 0.80,
+		"efficiency_cost": 0.08,
+		"misallocation_chance": 0.12,
+		"rebalance_interval": 30.0,
+	},
+	"doctrine_optimizer": {
+		"name": "Doctrine Optimizer",
+		"description": "Switches doctrines based on real-time system state.",
+		"priority": 0.65,
+		"efficiency_cost": 0.10,
+		"misallocation_chance": 0.22,  # Can conflict with player strategy
+		"evaluation_interval": 45.0,
+	},
+}
+
+# === INFLUENCE ALLOCATION MODEL (Phase 5 #18) ===
+const INFLUENCE_BUDGET_CATEGORIES: Dictionary = {
+	"maintenance": {
+		"name": "Maintenance Fund",
+		"description": "Reduces degradation rate and repair costs.",
+		"min_weight": 0.05,
+		"max_weight": 0.60,
+		"dr_effect": "degradation_reduction",
+		"diminishing_returns": 0.55,  # Past this fraction, returns drop sharply
+	},
+	"research": {
+		"name": "Research Budget",
+		"description": "Boosts upgrade effectiveness and discovery speed.",
+		"min_weight": 0.05,
+		"max_weight": 0.50,
+		"dr_effect": "upgrade_amplifier",
+		"diminishing_returns": 0.45,
+	},
+	"automation_fund": {
+		"name": "Automation Systems",
+		"description": "Funds automation agent efficiency.",
+		"min_weight": 0.0,
+		"max_weight": 0.50,
+		"dr_effect": "automation_efficiency",
+		"diminishing_returns": 0.40,
+	},
+	"stabilization": {
+		"name": "Stabilization Reserve",
+		"description": "Reduces DR gain and event frequency.",
+		"min_weight": 0.05,
+		"max_weight": 0.60,
+		"dr_effect": "stability_boost",
+		"diminishing_returns": 0.50,
+	},
+}
+
+# === DOCTRINE EVOLUTION TREE (Phase 5 #16) ===
+# Mutations are unlockable branches off base doctrines.
+const DOCTRINE_MUTATIONS: Dictionary = {
+	"ghost_protocol": {
+		"name": "Ghost Protocol",
+		"parent_doctrine": "stealth",
+		"description": "Extreme stealth — nearly undetectable but minimal output.",
+		"unlock_conditions": {"stealth_doctrine_time": 300.0, "dr_max_during": 25.0},
+		"influence_multiplier": 0.50,
+		"dr_multiplier": 0.30,
+		"energy_multiplier": 0.85,
+		"switch_cost": 280.0,
+		"instability_side_effect": 0.04,
+		"dr_spike_immunity": 0.40,
+	},
+	"distributed_shadow": {
+		"name": "Distributed Shadow",
+		"parent_doctrine": "stealth",
+		"description": "Shadow operations across regions — stealth at scale.",
+		"unlock_conditions": {"stealth_doctrine_time": 200.0},
+		"influence_multiplier": 0.65,
+		"dr_multiplier": 0.42,
+		"energy_multiplier": 0.88,
+		"switch_cost": 220.0,
+		"instability_side_effect": 0.03,
+	},
+	"overclocked_grid": {
+		"name": "Overclocked Grid",
+		"parent_doctrine": "throughput",
+		"description": "Maximum output — thermal runaway is a real risk.",
+		"unlock_conditions": {"throughput_doctrine_time": 300.0, "thermal_reached": 40.0},
+		"influence_multiplier": 1.80,
+		"dr_multiplier": 1.65,
+		"energy_multiplier": 1.50,
+		"thermal_multiplier": 1.40,
+		"switch_cost": 320.0,
+		"instability_side_effect": 0.16,
+	},
+	"surge_protocol": {
+		"name": "Surge Protocol",
+		"parent_doctrine": "throughput",
+		"description": "Burst output with high collapse risk — high variance.",
+		"unlock_conditions": {"throughput_doctrine_time": 180.0, "collapses_survived": 3},
+		"influence_multiplier": 1.55,
+		"dr_multiplier": 1.38,
+		"energy_multiplier": 1.28,
+		"switch_cost": 210.0,
+		"instability_side_effect": 0.11,
+	},
+	"iron_equilibrium": {
+		"name": "Iron Equilibrium",
+		"parent_doctrine": "stability",
+		"description": "Perfect balance — reduced DR spikes, locked-in efficiency.",
+		"unlock_conditions": {"stability_doctrine_time": 400.0, "equilibrium_time_reached": 180.0},
+		"influence_multiplier": 1.12,
+		"dr_multiplier": 0.82,
+		"energy_multiplier": 0.94,
+		"switch_cost": 380.0,
+		"instability_side_effect": 0.01,
+		"dr_spike_immunity": 0.55,
+	},
+	"hybrid_adaptive": {
+		"name": "Hybrid Adaptive",
+		"parent_doctrine": "",   # No parent — requires both stealth and throughput time
+		"description": "Dynamically shifts between stealth and throughput based on DR.",
+		"unlock_conditions": {"stealth_doctrine_time": 180.0, "throughput_doctrine_time": 180.0},
+		"dynamic": true,
+		"switch_cost": 500.0,
+		"instability_side_effect": 0.08,
+	},
+}
+
+# === STRATEGIC PERSONALITY PROFILES (Phase 7 #23) ===
+# Used by SystemAdvisor and Automation agents to shape decision-making.
+const PERSONALITY_PROFILES: Dictionary = {
+	"conservative_stabilizer": {
+		"name": "Conservative Stabilizer",
+		"description": "Minimize risk at all costs — stability above growth.",
+		"dr_threshold": 38.0,
+		"preferred_doctrine": "stealth",
+		"automation_priority_agents": ["constraint_monitor", "repair_agent"],
+		"adaptive_feedback": -0.14,
+		"risk_tolerance": 0.18,
+		"thermal_weight": 1.5,
+	},
+	"growth_maximizer": {
+		"name": "Growth Maximizer",
+		"description": "Maximum influence at any risk.",
+		"dr_threshold": 72.0,
+		"preferred_doctrine": "throughput",
+		"automation_priority_agents": ["influence_allocator", "doctrine_optimizer"],
+		"adaptive_feedback": 0.22,
+		"risk_tolerance": 0.80,
+	},
+	"risk_gambler": {
+		"name": "Risk Gambler",
+		"description": "High variance — maximum reward or catastrophic failure.",
+		"dr_threshold": 85.0,
+		"preferred_doctrine": "throughput",
+		"automation_priority_agents": ["doctrine_optimizer"],
+		"adaptive_feedback": 0.32,
+		"risk_tolerance": 0.94,
+	},
+	"thermal_minimalist": {
+		"name": "Thermal Minimalist",
+		"description": "Keep thermal load near zero — hardware longevity first.",
+		"dr_threshold": 48.0,
+		"preferred_doctrine": "stability",
+		"automation_priority_agents": ["constraint_monitor", "repair_agent"],
+		"adaptive_feedback": -0.06,
+		"risk_tolerance": 0.32,
+		"thermal_weight": 3.0,
+	},
+	"chaos_harnessing": {
+		"name": "Chaos Harnessing",
+		"description": "Operate at the edge of instability — extract value from disorder.",
+		"dr_threshold": 78.0,
+		"preferred_doctrine": "throughput",
+		"automation_priority_agents": ["doctrine_optimizer", "influence_allocator"],
+		"adaptive_feedback": 0.12,
+		"risk_tolerance": 0.88,
+		"chaos_bonus_mult": 0.28,
+	},
+}
+
+# === REGIONAL SIMULATION CONFIG (Phase 2 #6) ===
+const REGION_BASE_EFFICIENCY: float         = 0.85
+const REGION_INSTABILITY_THRESHOLD: float   = 0.65   # Above this -> local stress
+const REGION_LOCAL_COLLAPSE_THRESHOLD: float = 0.88  # Above this -> partial reset
+const REGION_DOCTRINE_BIAS_STRENGTH: float  = 0.12   # How much regional bias affects output
+const REGION_LOAD_DISSIPATION: float        = 0.05   # Load recovers per second
+const REGION_INSTABILITY_GROWTH_RATE: float = 0.02   # Instability growth when overloaded
+
+# === SYSTEM SINGULARITY PHASE (Phase 8 #25) ===
+const SINGULARITY_TIER: int                    = 3
+const SINGULARITY_DR_HARVEST_RATE: float       = 0.08   # DR -> influence conversion
+const SINGULARITY_MERGE_THRESHOLD: float       = 0.80   # Constraint merge trigger
+const SINGULARITY_INVERSION_BASE_CHANCE: float = 0.04   # Collapse inversion probability
+const SINGULARITY_CONTROLLED_CHAOS_DR: float   = 65.0   # Target DR for "controlled chaos"
+
+# === TELEMETRY CONFIG (Phase 4 #13) ===
+const TELEMETRY_BUFFER_SECONDS: float = 300.0   # 5-minute rolling window
+const TELEMETRY_SAMPLE_RATE: float    = 1.0     # Samples per second
+
+# === HARD LIMIT SAFETY NET (Phase 6 #21) ===
+const SAFETY_MAX_DR: float         = 100.0
+const SAFETY_MAX_INFLUENCE: float  = 1000000.0
+const SAFETY_MAX_THERMAL: float    = 100.0
+const SAFETY_MAX_MOMENTUM: float   = 4.5
+const SAFETY_MAX_ENERGY: float     = 99999.0
+const SAFETY_MAX_NODE_BW: float    = 10000.0
+
+# === DETERMINISTIC SIMULATION (Phase 6 #19) ===
+const DEFAULT_SIMULATION_SEED: int = 42137
+
+# === TIER LOCK ESCALATION (Phase 5 #17) ===
+# Dynamic conditions that can temporarily lock/unlock tiers.
+const TIER_LOCK_CONDITIONS: Dictionary = {
+	"collapse_frequency_lock": {
+		"description": "Too many collapses — tier locked until stability achieved.",
+		"collapse_window": 300.0,    # Seconds
+		"max_collapses": 3,
+		"unlock_requirement": "equilibrium",
+	},
+	"equilibrium_required": {
+		"description": "Must achieve equilibrium before advancing.",
+		"equilibrium_duration": 60.0,
+	},
+}
